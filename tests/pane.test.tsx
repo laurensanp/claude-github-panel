@@ -224,3 +224,39 @@ test('Ctrl+V while the panel does not have the keyboard is left alone', async ($
   expect(await seen({ key: 'unattach:issue|3:clip.png' }, 30), 'no picture taken').toBeUndefined()
   await ui.unmount()
 })
+
+test('the panel follows the repository Claude works in', async ($, on) => {
+  const calls: { cmd: string; cwd?: string }[] = []
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('tool.call', () => ({ result: {} }))
+  on('process.run', (_, e) => {
+    const cmd = (e as any).argv.join(' ')
+    calls.push({ cmd, cwd: (e as any).cwd ?? (e as any).init?.cwd })
+    const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    if (cmd === 'git -C C:/x/other/src rev-parse --show-toplevel') return ok('C:/x/other\n')
+    if (cmd === 'git -C C:/x/other remote get-url origin') return ok('https://github.com/o/other.git\n')
+    if (cmd === 'git -C C:/x/plain rev-parse --show-toplevel') return ok('C:/x/plain\n')
+    if (cmd === 'git -C C:/x/plain remote get-url origin') return { value: { exitCode: 2, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    const hit = OUT.find(([re]) => re.test(cmd))
+    return { value: { exitCode: hit ? 0 : 1, stdout: hit?.[1] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.tool.call({ tool: 'Bash', command: 'cd "C:/x/plain" && ls' } as any) // no GitHub remote: stays
+  await $.tool.call({ tool: 'Edit', file_path: 'C:/x/other/src/a.ts', old_string: 'a', new_string: 'b' } as any)
+  for (let i = 0; i < 100 && !calls.some(c => c.cmd.includes('remote get-url') && c.cmd.includes('other')); i++) await new Promise(r => setTimeout(r, 10))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  for (let i = 0; i < 100 && !calls.some(c => c.cmd.startsWith('gh api graphql') && c.cwd === 'C:/x/other'); i++) await new Promise(r => setTimeout(r, 10))
+  expect(calls.some(c => c.cmd.startsWith('gh api graphql') && c.cwd === 'C:/x/other'), 'GitHub asked about the other repo').toBe(true)
+  expect(calls.some(c => c.cwd === 'C:/x/plain'), 'a folder without a GitHub remote is not followed').toBe(false)
+  await ui.unmount()
+})
+
+test('/push hands Claude the push steps', async ($, on) => {
+  const asked: string[] = []
+  on('prompt.submit', (_, e) => (asked.push((e as any).text), { text: (e as any).text }) as any)
+  await $.prompt.submit({ text: '/push' } as any)
+  expect(asked[0]).toContain('Push all current progress')
+  expect(asked[0]).toContain('CLAUDE.md')
+  const r: any = await ($ as any).command.run({ command: 'push', args: '' })
+  expect(r.context?.[0]).toContain('Push all current progress')
+})

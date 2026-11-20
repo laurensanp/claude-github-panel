@@ -25,7 +25,7 @@ function warm(hex: string): string {
 }
 const GREY = warm('#8b949e')
 const C = {
-  open: '#3fb950', merged: '#a371f7', closed: '#f85149', done: '#a371f7', muted: GREY,
+  open: '#3fb950', merged: '#a371f7', closed: '#f85149', done: '#a371f7', muted: warm('#9198a1'), // one grey for all secondary text and icons
   surface: `${GREY}1c`, card: `${GREY}1c`, cardMine: `${GREY}2e`, menu: warm('#2a2b2e'),
   edge: `${GREY}2e`, hover: `${GREY}33`, accentBg: `${ORANGE}26`,
   pane: warm('#1c1c1c'), // the 60: the panel's own background, warmed
@@ -89,8 +89,11 @@ type Row = {
 }
 type Entry = { name: string; isDir: boolean }
 
+// The repository the panel shows: the one Claude last worked in ('' = the session's folder).
+let repoDir = ''
+let repoTop = '' // that repository's top folder, as git prints it
 async function run($: EngineInterface, argv: string[], stdin?: string): Promise<string> {
-  const r = await $.process.run(argv, { timeoutMs: 120000, ...(stdin !== undefined ? { stdin } : {}) })
+  const r = await $.process.run(argv, { timeoutMs: 120000, ...(stdin !== undefined ? { stdin } : {}), ...(repoDir ? { cwd: repoDir } : {}) })
   if (r.exitCode !== 0) throw new Error((r.stderr || r.stdout).trim() || `${argv[0]} failed`)
   return r.stdout
 }
@@ -394,6 +397,20 @@ const PASTE_WATCH_PS = [
   '  Start-Sleep -Milliseconds 25',
   '}',
 ].join('\n')
+// What /push (and the Push button) asks Claude to do: the way this user ships every
+// project (commits, version, push, release, notes), read from their repositories.
+const PUSH_STEPS = (dir: string) => `Push all current progress of the repository I am working on${dir ? ` (${dir})` : ''} to GitHub, the way I always do it:
+
+1. Read the repository's CLAUDE.md (and README) first: its "Release"/"Releases" section is the recipe and wins over these steps.
+2. \`git status\` and \`git log origin/<branch>..HEAD\`: see everything not yet pushed, in this repository and in nested ones you changed in this session.
+3. Commit what is left, in small commits by topic. Message: one plain sentence saying what changed for users, no prefix, no trailing period (like "Frame Generation up to 6x where the driver offers it"). Never commit secrets (.env, tokens, credentials) or build output that is ignored.
+4. Version: if the changes need one, bump it where the project keeps it (build.gradle, gradle.properties, package.json, plugin.json...) following semver from the current version (patch: fixes, minor: features, major: breaking; docs/CI only: none). Commit the bump alone as "<Name> <version>" (like "SIRIS 1.3.0"). Say the chosen version and why in one line.
+5. Push the branch. If it is not main, tell me and ask whether to merge it into main first.
+6. Release, if the project makes releases (tags, GitHub releases, a release workflow, or a Releases list in CLAUDE.md): build, then \`gh release create v<version> <only this project's own files> --title "<Name> <version>" --latest --notes-file <notes>\` with the title as the earlier releases have it, notes saying what changed for users; never attach other projects' files. Where a workflow releases on push to main, the bump is the release: check it ran. Then Modrinth, if the project is there, as its CLAUDE.md says: changelog for players, nothing about building.
+7. Update the Releases list in CLAUDE.md (newest first: "- v<version> (<date>): what changed. Modrinth <id>.") and commit it as "CLAUDE.md: <Name> <version> published", then push again.
+8. Tell me in a few lines what was pushed, the version, and the release and Modrinth links. If a step was refused or needs me (a payment, a login, a blocked command), stop there and tell me what to do.`
+let bandShown = false // the GitHub button above Claude's message box
+let unreadTotal = 0 // unread issues and PRs, for that button
 let watcher: { stop: () => void } | null = null
 let pasteTarget = '' // the comment box on screen, '' when none
 let lastPanelUse = 0 // a click, focus or keystroke in the panel
@@ -630,6 +647,30 @@ const pending = new Set<string>()
 let redraw: () => void = () => {}
 let polling = false
 
+const isAbsolute = (p: string) => /^([A-Za-z]:[\\/]|\/)/.test(p)
+// The folder a shell command works in: `cd X` or `git -C X`, absolute paths only.
+function folderInCommand(cmd: string): string {
+  const m = /(?:^|[;&|(]\s*)cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|)]+))/.exec(cmd) ?? /\bgit\s+-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(cmd)
+  const dir = m ? (m[1] ?? m[2] ?? m[3] ?? '') : ''
+  return isAbsolute(dir) ? dir : ''
+}
+// Show the GitHub repository a folder belongs to, if it is one and not the one shown now.
+async function follow($: EngineInterface, dir: string) {
+  try {
+    const top = await $.process.run(['git', '-C', dir, 'rev-parse', '--show-toplevel'])
+    const t = top.exitCode === 0 ? top.stdout.trim() : ''
+    if (!t || t.toLowerCase() === repoTop.toLowerCase()) return
+    const origin = await $.process.run(['git', '-C', t, 'remote', 'get-url', 'origin'])
+    if (origin.exitCode !== 0 || !/github\.com/i.test(origin.stdout)) return
+    repoDir = t; repoTop = t
+    slots.clear(); used = new Set(); seen = null; pictures.clear(); large.clear(); unreadTotal = 0
+    await update($, view, old => ({ ...old, tab: 'code', dir: '', file: null, stack: [], sub: 'conversation' }))
+    bandShown = true
+    if (!timer) timer = $.clock.every(TICK_MS, () => void poll($))
+    $.ui.invalidate('ui.render')
+  } catch {}
+}
+
 async function get<T>(key: string, gh: boolean, fetch: () => Promise<T>): Promise<T> {
   used.add(key)
   const slot = slots.get(key)
@@ -684,11 +725,34 @@ const LANG: Record<string, string> = { ts: 'typescript', tsx: 'tsx', js: 'javasc
 const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'GitHub', columns: 72, backgroundColor: C.pane })
 
 export const register: Register = on => {
+  // Always in reach: a GitHub button in the row above Claude's message box (the app's own
+  // toolbars are not open to mods). Shown in git repositories only.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!bandShown || (e.props as any).hasSurvey) return next(e)
+    const { Box, Button, Text, Svg } = $.ui.resolve(e) as any
+    return (
+      <Box flexDirection="row" gap={1} alignItems="center" justifyContent="flex-end">
+        {Svg ? <Svg source={MARK} alt="GitHub" width={14} height={14} /> : null}
+        <Button key="band:open" plain onPress={() => void open($)}>
+          <Text size="caption" color={C.subtle}>GitHub</Text>
+        </Button>
+        {unreadTotal > 0 && <Text size="caption" color={ORANGE}>{`● ${unreadTotal} new`}</Text>}
+        <Text size="caption" color={C.subtle}>·</Text>
+        <Button key="band:push" plain onPress={() => void $.prompt.submit({ text: '/push' } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))}>
+          <Text size="caption" color={C.subtle}>↑ Push</Text>
+        </Button>
+      </Box>
+    )
+  })
+
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'github', description: 'Show this repo (code, commits, PRs, issues, releases) in a side panel' })
+    await $.command.register({ name: 'push', description: 'Commit, version, push and release everything in the repository being worked on, the usual way' })
     await $.command.register({ name: 'comment', description: 'Comment on the issue, PR or commit open in the GitHub panel (paste pictures too)' })
     void run($, ['gh', 'api', 'user', '-q', '.login']).then(t => { me = t.trim(); redraw() }, () => {})
     const inRepo = await $.process.run(['git', 'rev-parse', '--is-inside-work-tree']).then(r => r.exitCode === 0, () => false)
+    bandShown = inRepo
+    if (inRepo && !repoTop) repoTop = (await $.process.run(['git', 'rev-parse', '--show-toplevel']).catch(() => null))?.stdout.trim() ?? ''
     if (inRepo) {
       void open($)
       timer?.cancel()
@@ -698,6 +762,11 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'comment' }, async () => ({ text: 'Open an issue, a pull request or a commit in the GitHub panel, then send /comment with your text.' }))
+
+  on('command.run', { command: 'push' }, async $ => {
+    // Reached only where prompt.submit below did not turn /push into the steps.
+    return { text: 'Pushing: Claude takes it from here.', context: [PUSH_STEPS(repoTop)] }
+  })
 
   on('command.run', { command: 'github' }, async $ => {
     await open($)
@@ -718,6 +787,8 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    // /push becomes the push steps as the prompt itself, so Claude starts on them at once.
+    if (e.command?.name === 'push' || /^\/push\s*$/.test(e.text ?? '')) return next({ ...e, text: PUSH_STEPS(repoTop), command: undefined } as any)
     const isComment = e.command?.name === 'comment' || /^\/comment(\s|$)/.test(e.text ?? '')
     if (!isComment) return next(e)
     const v = await read($, view)
@@ -764,9 +835,21 @@ export const register: Register = on => {
   // A commit, push or gh call shows up at once, GitHub included.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
-    if (/\b(git|gh)\b/.test(String((e as any).command ?? ''))) void poll($, true)
+    const cmd = String((e as any).command ?? '')
+    const dir = folderInCommand(cmd)
+    if (dir) void follow($, dir)
+    else if (/\b(git|gh)\b/.test(cmd)) void poll($, true)
     return ran
   })
+  // Editing a file in another repository moves the panel there too.
+  for (const tool of ['Edit', 'Write', 'NotebookEdit'] as const) {
+    on('tool.call', { tool }, async ($, e, next) => {
+      const ran = await next(e)
+      const file = String((e as any).file_path ?? (e as any).notebook_path ?? '')
+      if (isAbsolute(file)) void follow($, file.replace(/[\\/][^\\/]*$/, ''))
+      return ran
+    })
+  }
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
@@ -799,6 +882,7 @@ export const register: Register = on => {
     const accent = ORANGE
     const accentBg = `${accent}26`
     const unread = await unreadOf($, repo)
+    if (unread.size !== unreadTotal) { unreadTotal = unread.size; $.ui.invalidate('ui.render') }
     const warm = (key: string, gh: boolean, fetch: () => Promise<unknown>) => void get(key, gh, fetch).catch(() => {})
     warm('commits', false, () => commitsOf($))
     warm('releases', true, () => releasesOf($))
@@ -842,7 +926,6 @@ export const register: Register = on => {
         </Box>
       )
       : null
-    const gapPx = (px: number) => Svg ? <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="1" height="${px}"><rect width="1" height="${px}" fill="#000" fill-opacity="0"/></svg>`} alt="gap" width={1} height={px} /> : null
     // A label as GitHub draws it: a rounded pill sized to its text.
     const tag = (text: string, color: string) => {
       if (!Svg) return <Text size="caption" color={color}>{`[${text}]`}</Text>
@@ -921,7 +1004,7 @@ export const register: Register = on => {
           <Text size="heading" color={C.subtle}>/</Text>
           <Text size="heading" bold color={C.text}>{repo?.name ?? 'repository'}</Text>
         </Box>
-        {repo?.description ? <Text dimColor size="footnote">{repo.description}</Text> : null}
+        {repo?.description ? <Text color={C.subtle} size="footnote">{repo.description}</Text> : null}
         <Box flexDirection="row" columnGap={2} rowGap={0} flexWrap="wrap" alignItems="center">
           {local && <Text size="caption" color={C.subtle} wrap="truncate-end">on <Text color={ORANGE} bold>{local.branch}</Text></Text>}
           {repo && <Text size="caption" color={C.subtle}>★ <Text bold color={C.text}>{repo.stars}</Text> stars</Text>}
@@ -953,36 +1036,37 @@ export const register: Register = on => {
     ]
     // GitHub's repo nav: plain text tabs, a glyph, a count pill, the open one carried
     // by an accent bar under it. The whole tab is one button.
+    const PILL_PX = 20 // the pill's height: exactly one tab row (measured), or it is clipped
     const GLYPH: Record<Tab, string> = { code: '‹›', commits: '◦', prs: '⇄', issues: '◎', releases: '◇' }
+    // All tabs stay on one row: a narrower pane drops the counts first, then the closed
+    // tabs' names (their glyphs stay). The app keeps a width the person dragged, so the
+    // mod cannot reset it; it fits the row to it instead.
+    const cols = ((e.props as any).bodyColumns ?? 72) as number
+    const tabText = (label: string, count: number | undefined, level: number, active: boolean, id: Tab) =>
+      level >= 2 && !active ? GLYPH[id] : `${GLYPH[id]}  ${label}${level === 0 && count !== undefined ? `  ${count}` : ''}`
+    const fits = (level: number) => TABS.reduce((n, [id, label, , count]) => n + tabText(label, count, level, v.tab === id, id).length + 2, 0) <= cols
+    const level = fits(0) ? 0 : fits(1) ? 1 : 2
     const tabs = (
-      <Box flexDirection="column" gap={0}>
-        <Box flexDirection="row" columnGap={1} rowGap={1} flexWrap="wrap" justifyContent="space-around" paddingX={1} paddingY={0}
-          borderStyle="round" borderColor={edge} backgroundColor={fill(C.card)}>
-          {TABS.map(([id, label, , count, fresh]) => {
-            const active = v.tab === id && v.stack.length === 0
-            return (
-              <Box key={`tabwrap:${id}`} position="relative" flexDirection="column" gap={0} alignItems="center">
-                {/* Same air above and below the label + underline group; every tab gets the
-                    bar's room so open and closed tabs line up. */}
-                {gapPx(3)}
-                <Button key={`tab:${id}`} plain dimColor={!active} onPress={() => set({ tab: id, file: null, stack: [] })}>
-                  {`${GLYPH[id]}  ${label}${count !== undefined ? `  ${count}` : ''}`}
-                </Button>
-                {gapPx(3)}
-                {gapPx(3)}
-                {gapPx(6)}
-                {/* Drawn over the bar's room, so it takes the label's width and not the bar's own. */}
-                {active && Svg && (
-                  <Box position="absolute" left={0} right={0} top={0} bottom={0} flexDirection="column" justifyContent="flex-end" gap={0}>
-                    {roundBar(`bar:${id}`, [{ color: accent, grow: 1, alt: 'open tab' }], 3)}
-                    {gapPx(6)}
-                  </Box>
-                )}
-                {fresh > 0 && <Box position="absolute" top={-1} right={-2}>{disc(fresh, accent)}</Box>}
-              </Box>
-            )
-          })}
-        </Box>
+      // A row of tabs straight on the pane (no card, unlike the content below). The open tab
+      // sits on a rounded orange-tinted pill drawn as a picture behind its label: a border
+      // would add a whole row of height.
+      <Box flexDirection="row" columnGap={0} rowGap={0} flexWrap="nowrap" justifyContent="space-between" paddingX={0} paddingY={0}>
+        {TABS.map(([id, label, , count, fresh]) => {
+          const active = v.tab === id && v.stack.length === 0
+          return (
+            <Box key={`tabwrap:${id}`} position="relative" flexGrow={1} justifyContent="center" alignItems="center" paddingX={1}>
+              {active && Svg && (
+                <Box position="absolute" left={0} right={0} top={0} bottom={0} justifyContent="center" gap={0}>
+                  {roundBar(`pill:${id}`, [{ color: C.accentBg, grow: 1, alt: 'open tab' }], PILL_PX)}
+                </Box>
+              )}
+              <Button key={`tab:${id}`} plain onPress={() => set({ tab: id, file: null, stack: [] })}>
+                <Text color={active ? C.text : C.subtle}>{tabText(label, count, level, active, id)}</Text>
+              </Button>
+              {fresh > 0 && <Box position="absolute" top={-1} right={-1}>{disc(fresh, accent)}</Box>}
+            </Box>
+          )
+        })}
       </Box>
     )
 
@@ -1004,14 +1088,14 @@ export const register: Register = on => {
             </Box>
             <Box flexDirection="row" columnGap={1} flexWrap="wrap">
               {r.id && <Text mono size="caption" color={C.subtle}>{r.id}</Text>}
-              <Text dimColor size="caption">{r.meta}</Text>
+              <Text color={C.subtle} size="caption">{r.meta}</Text>
               {r.plus !== undefined && <Text size="caption" color={C.open}>+{r.plus}</Text>}
               {r.minus !== undefined && <Text size="caption" color={C.closed}>−{r.minus}</Text>}
             </Box>
           </Box>
           {(r.messages ?? 0) > 0 && (
             <Box flexDirection="row" gap={0} alignItems="center" flexShrink={0} paddingRight={1}>
-              {icon('comment', isNew ? '#ffffff' : C.muted, 14)}
+              {icon('comment', isNew ? C.text : C.subtle, 14)}
               <Text size="caption" bold={isNew} color={isNew ? C.text : C.subtle}>{` ${r.messages}`}</Text>
             </Box>
           )}
@@ -1027,7 +1111,7 @@ export const register: Register = on => {
       return listOf(rows, empty)
     }
     const listOf = (rows: Row[], empty: string) => rows.length === 0
-      ? box(<Text dimColor italic>{empty}</Text>)
+      ? box(<Text color={C.subtle} italic>{empty}</Text>)
       : (
         <Box flexDirection="column" gap={0} borderStyle="round" borderColor={edge} backgroundColor={fill(C.card)}>
           {rows.flatMap((r, i) => (i ? [rule(`rule:${r.key}`), row(r)] : [row(r)]))}
@@ -1039,8 +1123,8 @@ export const register: Register = on => {
         {items.map(([x, label, , count]) => {
           const picked = value === x
           return (
-            <Button key={`${prefix}:${x}`} plain dimColor={!picked} onPress={() => onPick(x)}>
-              {`${picked ? '● ' : '○ '}${label}${count !== undefined ? `  ${count}` : ''}`}
+            <Button key={`${prefix}:${x}`} plain onPress={() => onPick(x)}>
+              <Text color={picked ? C.text : C.subtle}>{`${picked ? '● ' : '○ '}${label}${count !== undefined ? `  ${count}` : ''}`}</Text>
             </Button>
           )
         })}
@@ -1067,10 +1151,9 @@ export const register: Register = on => {
     // A comment as a chat message: yours on the right in the accent, others on the left.
     // A small action: icon + label in one row, the label the button; tinted on hover.
     const action = (key: string, ic: string, label: string, onPress: () => void, color = C.muted) => (
-      <Box key={`actbox:${key}`} flexDirection="row" gap={0} alignItems="center" paddingX={0}
-        borderStyle="round" borderColor={C.clear} hover={rich ? { backgroundColor: C.hover } : undefined}>
+      <Box key={`actbox:${key}`} flexDirection="row" gap={0} alignItems="center">
         {icon(ic, color, 11)}
-        <Button key={key} plain dimColor={color === C.muted} onPress={onPress}><Text size="caption">{label}</Text></Button>
+        <Button key={key} plain onPress={onPress}><Text size="caption" color={color}>{label}</Text></Button>
       </Box>
     )
     // What a message can be changed through: the opening post, an issue/PR comment, a commit comment.
@@ -1115,7 +1198,7 @@ export const register: Register = on => {
             <Box flexDirection="row" gap={1} alignItems="center">
               {!mine && <Text size="caption" bold>{who}</Text>}
               {!mine && isAuthor && <Text size="caption" color={C.subtle}>author</Text>}
-              <Text size="caption" dimColor>{label}</Text>
+              <Text size="caption" color={C.subtle}>{label}</Text>
             </Box>
             {editing && !editing.confirmDelete
               ? (
@@ -1126,7 +1209,7 @@ export const register: Register = on => {
                   <Box flexDirection="row" columnGap={2} alignItems="center">
                     <Button key={`editsave:${ek}`} variant="primary" onPress={() => void changeMessage(act!, edits.get(ek)?.text ?? editing.text)}>Save</Button>
                     <Button key={`editcancel:${ek}`} variant="secondary" onPress={() => { edits.delete(ek); redraw() }}>Cancel</Button>
-                    {editing.busy && <Text size="caption" dimColor italic>{editing.busy}</Text>}
+                    {editing.busy && <Text size="caption" color={C.subtle} italic>{editing.busy}</Text>}
                     {editing.error && <Text size="caption" color="error">{editing.error}</Text>}
                   </Box>
                 </Box>
@@ -1151,7 +1234,7 @@ export const register: Register = on => {
                 <Text size="caption" color={C.subtle}>Delete this message?</Text>
                 <Button key={`deleteyes:${ek}`} variant="primary" onPress={() => void changeMessage(act!, null)}>Delete</Button>
                 <Button key={`deleteno:${ek}`} variant="secondary" onPress={() => { edits.delete(ek); redraw() }}>Keep</Button>
-                {editing.busy && <Text size="caption" dimColor italic>{editing.busy}</Text>}
+                {editing.busy && <Text size="caption" color={C.subtle} italic>{editing.busy}</Text>}
                 {editing.error && <Text size="caption" color="error">{editing.error}</Text>}
               </Box>
             )}
@@ -1164,13 +1247,13 @@ export const register: Register = on => {
       <Box key={`diff:${path}`} flexDirection="column" gap={0}>
         {rule(`rule:diff:${path}`)}
         <Box flexDirection="row" gap={1} alignItems="center" paddingX={1} paddingY={rich ? 1 : 0}>
-          {icon('file', C.muted, 14)}
+          {icon('file', C.subtle, 14)}
           <Box flexShrink={1}><Text mono size="caption" wrap="truncate-start">{path}</Text></Box>
           <Box flexGrow={1} />
           <Text size="caption" color={C.open}>+{plus}</Text>
           <Text size="caption" color={C.closed}>−{minus}</Text>
         </Box>
-        {body ? <Code source={body} format="diff" path={path} /> : <Box paddingX={1}><Text dimColor size="caption">Binary or renamed file</Text></Box>}
+        {body ? <Code source={body} format="diff" path={path} /> : <Box paddingX={1}><Text color={C.subtle} size="caption">Binary or renamed file</Text></Box>}
       </Box>
     ))
     const title = (text: string, num?: string) => (
@@ -1213,13 +1296,22 @@ export const register: Register = on => {
       }
       redraw()
     }
-    const composer = (d: Detail, state?: 'open' | 'closed') => {
+    // Close / Reopen, at the right end of an issue's or PR's header row.
+    const stateAction = (d: Detail, state?: 'open' | 'closed') => {
+      const k = slotKey(d)
+      const noun = d.kind === 'pr' ? 'pull request' : d.kind
+      return [
+        <Box key={`hdrgrow:${k}`} flexGrow={1} />,
+        state === 'open' ? action(`close:${k}`, 'close', draftOf(k).text.trim() ? 'Send and close' : `Close ${noun}`, () => void send(d, 'close'))
+          : state === 'closed' ? action(`reopen:${k}`, 'issueOpen', `Reopen ${noun}`, () => void send(d, 'reopen')) : null,
+      ]
+    }
+    const composer = (d: Detail) => {
       const { Input } = els as any
       const k = slotKey(d)
       if (d.kind !== 'commit') pasteTarget = k
       senders.set(k, () => void send(d))
       const dr = draftOf(k)
-      const noun = d.kind === 'pr' ? 'pull request' : d.kind
       const canAttach = d.kind !== 'commit'
       const thumb = (f: string) => {
         const name = f.split(/[\\/]/).pop() ?? f
@@ -1238,12 +1330,14 @@ export const register: Register = on => {
           <Box key={`thumb:${k}:${fk}`} flexDirection="column" gap={0} alignItems="center" width={12}>
             {art}
             <Text size="caption" color={C.subtle} wrap="truncate-middle">{name}</Text>
-            <Button key={`unattach:${k}:${fk}`} plain dimColor onPress={() => { dismissed.add(`${k}|${f}`); setDraft(k, { files: draftOf(k).files.filter(x => x !== f) }); redraw() }}>✕ Remove</Button>
+            <Button key={`unattach:${k}:${fk}`} plain onPress={() => { dismissed.add(`${k}|${f}`); setDraft(k, { files: draftOf(k).files.filter(x => x !== f) }); redraw() }}>
+              <Text size="caption" color={C.muted}>✕ Remove</Text>
+            </Button>
           </Box>
         )
       }
       return (
-        <Box key={`composer:${k}`} flexDirection="column" gap={1}>
+        <Box key={`composer:${k}`} flexDirection="column" gap={0}>
           {dr.files.length > 0 && <Box flexDirection="row" columnGap={2} rowGap={1} flexWrap="wrap" paddingX={1}>{dr.files.map(thumb)}</Box>}
           {canAttach && dr.pathField && (
             <Input key={`attach:${k}`} value="" submitLabel="add" autoFocus
@@ -1252,21 +1346,25 @@ export const register: Register = on => {
           )}
           {/* Discord-style bar: ＋ for attachments on the left, the field beside it. A field in a
               row shrinks to its placeholder, so its box gets the panel's width in cells. */}
-          <Box flexDirection="row" gap={1} alignItems="center" position="relative">
+          <Box flexDirection="row" gap={1} alignItems="flex-start" position="relative">
             {canAttach && (
-              <Button key={`add:${k}`} variant={dr.menu ? 'primary' : 'secondary'} onPress={() => { setDraft(k, { menu: !draftOf(k).menu, pathField: false }); redraw() }}>＋</Button>
+              // Top-aligned with the field's own ➤, which the app draws 5 px down from its top.
+              <Box key={`addwrap:${k}`} flexDirection="column" gap={0}>
+                {Svg ? <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="1" height="5"><rect width="1" height="5" fill="#000" fill-opacity="0"/></svg>`} alt="gap" width={1} height={5} /> : null}
+                <Button key={`add:${k}`} variant={dr.menu ? 'primary' : 'secondary'} onPress={() => { setDraft(k, { menu: !draftOf(k).menu, pathField: false }); redraw() }}>＋</Button>
+              </Box>
             )}
             {canAttach && dr.menu && (
               // A card above the ＋, in the panel's own look (solid, so nothing shows through).
               <Box key={`menu:${k}`} position="absolute" left={0} bottom={3} flexDirection="column" gap={0}
-                paddingX={0} paddingY={rich ? 1 : 0} borderStyle="round" borderColor={edge} backgroundColor={fill(C.menu)}>
+                paddingX={1} paddingY={0} borderStyle="round" borderColor={edge} backgroundColor={fill(C.menu)}>
                 {([
                   ['upload', 'Upload a file', () => void pickFiles($, k)],
                   ['clipboard', 'Paste from clipboard', () => void pasteClipboard($, k)],
                   ['link', 'Enter a file path', () => { setDraft(k, { menu: false, pathField: true }); redraw() }],
                 ] as [string, string, () => void][]).map(([ic, label, act]) => (
-                  <Box key={`menuitem:${k}:${ic}`} flexDirection="row" gap={1} alignItems="center" paddingX={1}
-                    borderStyle="round" borderColor={C.clear} hover={rich ? { backgroundColor: C.hover } : undefined}>
+                  // No border per row: each one added a row above and below (too tall).
+                  <Box key={`menuitem:${k}:${ic}`} flexDirection="row" gap={1} alignItems="center">
                     {icon(ic, C.icon, 15)}
                     <Button key={`menu:${k}:${ic}`} plain onPress={act}>{label}</Button>
                   </Box>
@@ -1280,18 +1378,11 @@ export const register: Register = on => {
                 onSubmit={(t: string) => { setDraft(k, { text: t }); void send(d) }} />
             </Box>
           </Box>
-          <Box flexDirection="row" columnGap={2} flexWrap="wrap" alignItems="center" paddingX={1}>
+          <Box flexDirection="row" columnGap={2} flexWrap="wrap" alignItems="center" paddingX={0}>
             {dr.busy
-              ? <Text size="caption" dimColor italic>{dr.busy}</Text>
+              ? <Text size="caption" color={C.subtle} italic>{dr.busy}</Text>
               : dr.error ? <Text size="caption" color="error">{dr.error}</Text>
                 : dr.note ? <Text size="caption" color={C.open}>{dr.note}</Text> : null}
-            <Box flexGrow={1} />
-            {state === 'open' && (
-              action(`close:${k}`, 'close', dr.text.trim() ? 'Send and close' : `Close ${noun}`, () => void send(d, 'close'))
-            )}
-            {state === 'closed' && (
-              action(`reopen:${k}`, 'issueOpen', `Reopen ${noun}`, () => void send(d, 'reopen'))
-            )}
           </Box>
         </Box>
       )
@@ -1311,10 +1402,10 @@ export const register: Register = on => {
             {Svg && shown
               ? <Svg alt="Picture, full size"
                   source={`<svg xmlns="http://www.w3.org/2000/svg" width="${shown.w}" height="${shown.h}" viewBox="0 0 ${shown.w} ${shown.h}"><defs><clipPath id="r"><rect width="${shown.w}" height="${shown.h}" rx="12"/></clipPath></defs><image href="${shown.uri}" width="${shown.w}" height="${shown.h}" clip-path="url(#r)"/></svg>`} />
-              : <Text dimColor italic>Loading the picture…</Text>}
+              : <Text color={C.subtle} italic>Loading the picture…</Text>}
             {pic && pic !== 'loading' && (
               <Box flexDirection="row" columnGap={2} flexWrap="wrap" alignItems="center">
-                <Text size="caption" dimColor>{`${pic.ow} × ${pic.oh}, ${size(pic.bytes)}${big === 'loading' ? ', sharpening…' : ''}`}</Text>
+                <Text size="caption" color={C.subtle}>{`${pic.ow} × ${pic.oh}, ${size(pic.bytes)}${big === 'loading' ? ', sharpening…' : ''}`}</Text>
                 <Box flexGrow={1} />
                 <Button key={`original:${d.id}`} plain onPress={() => void openOriginal($, pic.file)}>Open original</Button>
               </Box>
@@ -1332,7 +1423,8 @@ export const register: Register = on => {
             {title(x.title, `#${x.number}`)}
             <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
               {stateMark(st)}
-              <Text size="caption" dimColor><Text bold color={C.text}>{x.author?.login}</Text> opened this {ago(x.createdAt)}{x.comments.length ? `, ${x.comments.length} ${x.comments.length === 1 ? 'reply' : 'replies'}` : ''}</Text>
+              <Text size="caption" color={C.subtle}><Text bold color={C.text}>{x.author?.login}</Text> opened this {ago(x.createdAt)}{x.comments.length ? `, ${x.comments.length} ${x.comments.length === 1 ? 'reply' : 'replies'}` : ''}</Text>
+              {stateAction(d, x.state === 'OPEN' ? 'open' : 'closed')}
             </Box>
             {(x.labels?.length ?? 0) > 0 && (
               <Box flexDirection="row" gap={1} flexWrap="wrap">
@@ -1342,7 +1434,7 @@ export const register: Register = on => {
             {comment('body', x.author?.login ?? '?', x.createdAt, x.body, 'opened', true, { type: 'body', d })}
             {x.comments.map((c: any, i: number) =>
               comment(`c${i}`, c.author?.login ?? '?', c.createdAt, c.body, 'commented', c.author?.login === x.author?.login, commentAct(d, c.url)))}
-            {composer(d, x.state === 'OPEN' ? 'open' : 'closed')}
+            {composer(d)}
           </Box>
         )
       }
@@ -1370,7 +1462,7 @@ export const register: Register = on => {
           inner = [
             comment('body', x.author?.login ?? '?', x.createdAt, x.body, 'opened', true, { type: 'body', d }),
             ...timeline.map((t: any, i: number) => comment(`t${i}`, t.who ?? '?', t.when, t.body, t.note, t.who === x.author?.login, t.url ? commentAct(d, t.url) : undefined)),
-            composer(d, x.state === 'OPEN' ? 'open' : x.state === 'CLOSED' ? 'closed' : undefined),
+            composer(d),
           ]
         }
         return (
@@ -1379,10 +1471,11 @@ export const register: Register = on => {
             {title(x.title, `#${x.number}`)}
             <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
               {stateMark(st)}
-              <Text size="caption" dimColor>
+              <Text size="caption" color={C.subtle}>
                 <Text bold color={C.text}>{x.author?.login}</Text> {x.state === 'MERGED' ? 'merged' : 'wants to merge'} {x.commits.length} {x.commits.length === 1 ? 'commit' : 'commits'} into{' '}
                 <Text mono color={C.text}>{x.baseRefName}</Text> from <Text mono color={C.text}>{x.isCrossRepository ? `${x.headRepositoryOwner?.login}:` : ''}{x.headRefName}</Text>
               </Text>
+              {stateAction(d, x.state === 'OPEN' ? 'open' : x.state === 'CLOSED' ? 'closed' : undefined)}
             </Box>
             <Box flexDirection="row" gap={2}>
               <Text size="caption" color={C.open}>+{x.additions}</Text>
@@ -1409,11 +1502,11 @@ export const register: Register = on => {
             {title(headline)}
             {rest.join('\n').trim() ? box(<Text size="footnote">{rest.join('\n').trim()}</Text>) : null}
             <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-              {icon('commit', C.muted, 14)}
-              <Text size="caption" dimColor><Text bold color={C.text}>{x.who}</Text> committed {ago(x.when)}</Text>
+              {icon('commit', C.subtle, 14)}
+              <Text size="caption" color={C.subtle}><Text bold color={C.text}>{x.who}</Text> committed {ago(x.when)}</Text>
               <Text mono size="caption" color={C.subtle}>{x.sha.slice(0, 7)}</Text>
             </Box>
-            <Text size="caption" dimColor>
+            <Text size="caption" color={C.subtle}>
               {files.length} {files.length === 1 ? 'file' : 'files'} changed <Text color={C.open}>+{files.reduce((a, f) => a + f[2], 0)}</Text> <Text color={C.closed}>−{files.reduce((a, f) => a + f[3], 0)}</Text>
             </Text>
             {diffFiles(x.diff)}
@@ -1435,9 +1528,9 @@ export const register: Register = on => {
             {x.isDraft && pill('Draft', C.muted)}
           </Box>
           <Box flexDirection="row" gap={1} alignItems="center">
-            {icon('tag', C.muted, 14)}
+            {icon('tag', C.subtle, 14)}
             <Text mono size="caption" color={C.subtle}>{x.tagName}</Text>
-            <Text size="caption" dimColor>released by <Text bold color={C.text}>{x.author?.login}</Text> {ago(x.publishedAt)}</Text>
+            <Text size="caption" color={C.subtle}>released by <Text bold color={C.text}>{x.author?.login}</Text> {ago(x.publishedAt)}</Text>
           </Box>
           {rule('rule:notes')}
           {box(md('md:release', x.body))}
@@ -1446,10 +1539,10 @@ export const register: Register = on => {
             <Text bold size="caption">Assets <Text color={C.subtle}>{` ${x.assets.length}`}</Text></Text>,
             ...x.assets.map((a: any) => (
               <Box flexDirection="row" gap={1} alignItems="center">
-                {icon('file', C.muted, 14)}
+                {icon('file', C.subtle, 14)}
                 <Box flexShrink={1}><Text mono size="caption" wrap="truncate-middle">{a.name}</Text></Box>
                 <Box flexGrow={1} />
-                <Text size="caption" dimColor>{size(a.size)}, {a.downloadCount} downloads</Text>
+                <Text size="caption" color={C.subtle}>{size(a.size)}, {a.downloadCount} downloads</Text>
               </Box>
             )),
           ])}
@@ -1470,7 +1563,7 @@ export const register: Register = on => {
                   <Button key={`crumb:${target}`} plain onPress={() => set({ dir: target ? `${target}/` : '', file: null })}>
                     <Text color={C.subtle}>{c}</Text>
                   </Button>
-                  <Text dimColor>{' / '}</Text>
+                  <Text color={C.subtle}>{' / '}</Text>
                 </Box>
           })}
         </Box>
@@ -1485,10 +1578,10 @@ export const register: Register = on => {
               <Text size="caption" color={C.text} wrap="truncate-end">{ls}</Text>
             </Button>
             <Box flexDirection="row" gap={1} alignItems="center">
-              {icon('commit', C.muted, 12)}
+              {icon('commit', C.subtle, 12)}
               <Text size="caption" bold>{la}</Text>
               <Text mono size="caption" color={C.subtle}>{lh}</Text>
-              <Text size="caption" dimColor>{ago(lw)}</Text>
+              <Text size="caption" color={C.subtle}>{ago(lw)}</Text>
             </Box>
           </Box>
         )
@@ -1519,13 +1612,13 @@ export const register: Register = on => {
           {frame([
             v.dir
               ? <Box key="upbox" flexDirection="row" gap={1} alignItems="center">
-                  {icon('folder', C.muted, 14)}
+                  {icon('folder', C.subtle, 14)}
                   <Button key="up" plain onPress={() => set({ dir: v.dir.replace(/[^/]+\/$/, '') })}><Text color={C.subtle}>..</Text></Button>
                 </Box>
               : null,
             ...entries.map(it => (
               <Box key={`fbox:${v.dir}${it.name}`} flexDirection="row" gap={1} alignItems="center">
-                {icon(it.isDir ? 'folder' : 'file', it.isDir ? C.folder : C.muted, 14)}
+                {icon(it.isDir ? 'folder' : 'file', it.isDir ? C.folder : C.subtle, 14)}
                 <Button key={`f:${v.dir}${it.name}`} plain
                   onPress={() => it.isDir ? set({ dir: `${v.dir}${it.name}/` }) : set({ file: `${v.dir}${it.name}` })}>
                   <Text color={C.text}>{it.name}</Text>
@@ -1538,7 +1631,7 @@ export const register: Register = on => {
               <Box flexDirection="column" gap={1}>
                 {rule('rule:readme')}
                 <Box flexDirection="row" gap={1} alignItems="center" paddingX={1}>
-                  {icon('book', C.muted, 14)}<Text bold size="caption">{readme!.name}</Text>
+                  {icon('book', C.subtle, 14)}<Text bold size="caption">{readme!.name}</Text>
                 </Box>
                 <Box paddingX={1}>{md('md:readme', readmeText)}</Box>
               </Box>
@@ -1560,7 +1653,7 @@ export const register: Register = on => {
       else body = list(await get('issues|all', true, () => issuesOf($, 'all')), 'No issues yet.')
     } catch (err) {
       body = err === LOADING
-        ? <Box paddingX={1}><Text dimColor italic>Loading…</Text></Box>
+        ? <Box paddingX={1}><Text color={C.subtle} italic>Loading…</Text></Box>
         : box(<Text color="error">{String((err as Error)?.message ?? err)}</Text>)
     }
 

@@ -2,7 +2,7 @@
 
 A side panel in the Claude Code desktop app that shows the GitHub repository of the folder you are working in: code, commits, pull requests, issues and releases, all readable inside the panel. You can comment on issues, PRs and commits (with pictures and files), edit and delete your own comments, and the panel updates live.
 
-Open it with `/github`.
+Open it with `/github`, or with the GitHub button in the row above the message box (shown in git repositories).
 
 ## Requirements
 
@@ -37,12 +37,15 @@ Paste this into Claude Code:
 
 ## Using it
 
+- **Follows your work**: it shows the GitHub repository of the session's folder, and switches by itself when Claude edits files or runs commands (`cd`, `git -C`) in another GitHub repository.
 - **Tabs**: Code, Commits, PRs, Issues, Releases. An orange dot with a number marks unread activity.
 - **Open anything**: click an issue, PR, commit or release to read it in the panel. Click a picture to see it large.
 - **Comment**: type in the box at the bottom. Enter sends, Ctrl+Enter (or Shift+Enter) starts a new line.
 - **Attach**: Ctrl+V a copied picture or file, or use **+** (Upload a file, Paste from clipboard, Enter a file path).
 - **Your messages**: Edit or Delete under each one (Delete asks first).
 - `/comment <text>` in Claude's own box comments on whatever is open in the panel.
+- **Push** (next to the GitHub button above the message box) or `/push`: Claude commits what is left in small commits, bumps the version if the changes need one (semver), pushes, makes the GitHub release (and Modrinth, where the project's CLAUDE.md says so) and notes it in CLAUDE.md. A project's own "Releases" section in CLAUDE.md wins over the default steps. Claude asks before merging a branch into main, and stops to ask when something needs you.
+- The tabs always stay on one row: in a narrow panel the counts go first, then the names of the tabs that aren't open.
 
 ## What runs in the background
 
