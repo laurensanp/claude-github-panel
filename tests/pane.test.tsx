@@ -306,3 +306,22 @@ test('an answer for the old repository does not come back after a switch', async
   expect(await ui.find({ text: 'no-such-text' } as any)).toBeUndefined()
   await ui.unmount()
 })
+
+test('"to push" is a Push button', async ($, on) => {
+  const asked: string[] = []
+  on('prompt.submit', (_, e) => (asked.push((e as any).text), { text: (e as any).text }) as any)
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('process.run', (_, e) => {
+    const cmd = (e as any).argv.join(' ')
+    const hit = OUT.find(([re]) => re.test(cmd))
+    return { value: { exitCode: hit ? 0 : 1, stdout: hit?.[1] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  let chip: unknown
+  for (let i = 0; i < 100 && !chip; i++) { chip = await ui.find({ key: 'ahead:pushnow' }); if (!chip) await new Promise(r => setTimeout(r, 10)) }
+  expect(chip, 'the hover button is drawn').toBeDefined()
+  await ui.press({ key: 'ahead:push' })
+  expect(asked[0]).toContain('Push all current progress')
+  await ui.unmount()
+})

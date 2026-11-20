@@ -1015,7 +1015,22 @@ export const register: Register = on => {
           {repo && <Text size="caption" color={C.subtle}>★ <Text bold color={C.text}>{repo.stars}</Text> stars</Text>}
           {repo && <Text size="caption" color={C.subtle}>⑂ <Text bold color={C.text}>{repo.forks}</Text> forks</Text>}
           {local && local.changed > 0 && <Text size="caption" color="#d29922">● {local.changed} uncommitted</Text>}
-          {local && local.ahead > 0 && <Text size="caption" color={C.open}>↑ {local.ahead} to push</Text>}
+          {local && local.ahead > 0 && (() => {
+            // "↑ 2 to push" is the Push button too; hovered, "↑ Push now" is laid over it.
+            const label = `↑ ${local.ahead} to push`
+            const push = () => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))
+            return (
+              <Box key="aheadchip" position="relative" hover={rich ? { scope: 'pushnow' } : undefined}>
+                <Button key="ahead:push" plain onPress={push}><Text size="caption" color={C.open}>{label}</Text></Button>
+                {rich && (
+                  <Box position="absolute" top={0} left={0} width={label.length} display="none" backgroundColor={C.pane}
+                    hover={{ scope: 'pushnow', display: 'flex' }}>
+                    <Button key="ahead:pushnow" plain onPress={push}><Text size="caption" color={C.open} underline>↑ Push now</Text></Button>
+                  </Box>
+                )}
+              </Box>
+            )
+          })()}
           {local && local.behind > 0 && <Text size="caption" color={C.closed}>↓ {local.behind} to pull</Text>}
         </Box>
         {repo && repo.languages.length > 0 && Svg && (

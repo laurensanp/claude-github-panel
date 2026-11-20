@@ -44,7 +44,7 @@ Paste this into Claude Code:
 - **Attach**: Ctrl+V a copied picture or file, or use **+** (Upload a file, Paste from clipboard, Enter a file path).
 - **Your messages**: Edit or Delete under each one (Delete asks first).
 - `/comment <text>` in Claude's own box comments on whatever is open in the panel.
-- **Push** (next to the GitHub button above the message box) or `/push`: Claude commits what is left in small commits, bumps the version if the changes need one (semver), pushes, makes the GitHub release (and Modrinth, where the project's CLAUDE.md says so) and notes it in CLAUDE.md. A project's own "Releases" section in CLAUDE.md wins over the default steps. Claude asks before merging a branch into main, and stops to ask when something needs you.
+- **Push** (next to the GitHub button above the message box, or the green "↑ 2 to push" in the panel's header, which reads "Push now" on hover) or `/push`: Claude commits what is left in small commits, bumps the version if the changes need one (semver), pushes, makes the GitHub release (and Modrinth, where the project's CLAUDE.md says so) and notes it in CLAUDE.md. A project's own "Releases" section in CLAUDE.md wins over the default steps. Claude asks before merging a branch into main, and stops to ask when something needs you.
 - The tabs always stay on one row: in a narrow panel the counts go first, then the names of the tabs that aren't open.
 
 ## What runs in the background
