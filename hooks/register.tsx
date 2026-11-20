@@ -92,6 +92,7 @@ type Entry = { name: string; isDir: boolean }
 // The repository the panel shows: the one Claude last worked in ('' = the session's folder).
 let repoDir = ''
 let repoTop = '' // that repository's top folder, as git prints it
+let repoGen = 0 // counts switches: answers fetched before one are thrown away
 async function run($: EngineInterface, argv: string[], stdin?: string): Promise<string> {
   const r = await $.process.run(argv, { timeoutMs: 120000, ...(stdin !== undefined ? { stdin } : {}), ...(repoDir ? { cwd: repoDir } : {}) })
   if (r.exitCode !== 0) throw new Error((r.stderr || r.stdout).trim() || `${argv[0]} failed`)
@@ -662,8 +663,8 @@ async function follow($: EngineInterface, dir: string) {
     if (!t || t.toLowerCase() === repoTop.toLowerCase()) return
     const origin = await $.process.run(['git', '-C', t, 'remote', 'get-url', 'origin'])
     if (origin.exitCode !== 0 || !/github\.com/i.test(origin.stdout)) return
-    repoDir = t; repoTop = t
-    slots.clear(); used = new Set(); seen = null; pictures.clear(); large.clear(); unreadTotal = 0
+    repoDir = t; repoTop = t; repoGen++
+    pending.clear(); slots.clear(); used = new Set(); seen = null; pictures.clear(); large.clear(); unreadTotal = 0
     await update($, view, old => ({ ...old, tab: 'code', dir: '', file: null, stack: [], sub: 'conversation' }))
     bandShown = true
     if (!timer) timer = $.clock.every(TICK_MS, () => void poll($))
@@ -680,10 +681,12 @@ async function get<T>(key: string, gh: boolean, fetch: () => Promise<T>): Promis
   }
   if (!pending.has(key)) {
     pending.add(key)
+    const gen = repoGen
+    // An answer for the repository shown before a switch is dropped, not cached.
     fetch()
-      .then(value => slots.set(key, { value, json: JSON.stringify(value), gh, fetch }),
-        error => slots.set(key, { value: undefined, json: '', gh, fetch, error }))
-      .finally(() => { pending.delete(key); redraw() })
+      .then(value => { if (gen === repoGen) slots.set(key, { value, json: JSON.stringify(value), gh, fetch }) },
+        error => { if (gen === repoGen) slots.set(key, { value: undefined, json: '', gh, fetch, error }) })
+      .finally(() => { if (gen === repoGen) pending.delete(key); redraw() })
   }
   throw LOADING
 }
@@ -692,8 +695,9 @@ async function get<T>(key: string, gh: boolean, fetch: () => Promise<T>): Promis
 function prefetch(key: string, fetch: () => Promise<unknown>) {
   if (slots.has(key) || pending.has(key)) return
   pending.add(key)
-  fetch().then(value => slots.set(key, { value, json: JSON.stringify(value), gh: true, fetch }), () => {})
-    .finally(() => pending.delete(key))
+  const gen = repoGen
+  fetch().then(value => { if (gen === repoGen) slots.set(key, { value, json: JSON.stringify(value), gh: true, fetch }) }, () => {})
+    .finally(() => { if (gen === repoGen) pending.delete(key) })
 }
 
 async function poll($: EngineInterface, force = false) {
@@ -704,6 +708,7 @@ async function poll($: EngineInterface, force = false) {
 
 async function pollOnce($: EngineInterface, force: boolean) {
   tick++
+  const gen = repoGen
   let changed = false
   await Promise.all([...used].map(async key => {
     const slot = slots.get(key)
@@ -711,7 +716,7 @@ async function pollOnce($: EngineInterface, force: boolean) {
     try {
       const value = await slot.fetch()
       const text = JSON.stringify(value)
-      if (text !== slot.json) {
+      if (text !== slot.json && gen === repoGen) {
         slots.set(key, { value, json: text, gh: slot.gh, fetch: slot.fetch })
         changed = true
       }
@@ -1265,8 +1270,9 @@ export const register: Register = on => {
     async function refresh(key: string) {
       const slot = slots.get(key)
       if (!slot) return
+      const gen = repoGen
       const value = await slot.fetch().catch(() => slot.value)
-      slots.set(key, { value, json: JSON.stringify(value), gh: slot.gh, fetch: slot.fetch })
+      if (gen === repoGen) slots.set(key, { value, json: JSON.stringify(value), gh: slot.gh, fetch: slot.fetch })
     }
     async function send(d: Detail, toggle?: 'close' | 'reopen') {
       const k = slotKey(d)

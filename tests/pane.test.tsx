@@ -276,3 +276,33 @@ test('the Push button above the prompt starts the push steps', async ($, on) => 
   expect(asked[0]).toContain('Push all current progress')
   await ui.unmount()
 })
+
+test('an answer for the old repository does not come back after a switch', async ($, on) => {
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('tool.call', () => ({ result: {} }))
+  on('process.run', async (_, e) => {
+    const cmd = (e as any).argv.join(' ')
+    const cwd = (e as any).cwd ?? (e as any).init?.cwd
+    const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    if (cmd === 'git -C C:/x/next rev-parse --show-toplevel') return ok('C:/x/next\n')
+    if (cmd === 'git -C C:/x/next remote get-url origin') return ok('https://github.com/o/next.git\n')
+    if (cmd.startsWith('gh api graphql')) {
+      if (cwd === 'C:/x/next') return ok(JSON.stringify({ data: { repository: { ...REPO, name: 'newrepo' } } }))
+      await new Promise(r => setTimeout(r, 150)) // the old repository answers late
+      return ok(JSON.stringify({ data: { repository: { ...REPO, name: 'oldrepo' } } }))
+    }
+    const hit = OUT.find(([re]) => re.test(cmd))
+    return { value: { exitCode: hit ? 0 : 1, stdout: hit?.[1] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await new Promise(r => setTimeout(r, 30)) // the old request is on its way
+  await $.tool.call({ tool: 'Edit', file_path: 'C:/x/next/a.ts', old_string: 'a', new_string: 'b' } as any)
+  let shown: unknown
+  for (let i = 0; i < 100 && !shown; i++) { shown = await ui.find({ text: 'newrepo' } as any); if (!shown) await new Promise(r => setTimeout(r, 10)) }
+  expect(shown, 'the new repository shows').toBeDefined()
+  await new Promise(r => setTimeout(r, 300))
+  expect(await ui.find({ text: 'oldrepo' } as any), 'the late answer is dropped').toBeUndefined()
+  expect(await ui.find({ text: 'no-such-text' } as any)).toBeUndefined()
+  await ui.unmount()
+})
