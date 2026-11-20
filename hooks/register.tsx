@@ -738,7 +738,7 @@ export const register: Register = on => {
         </Button>
         {unreadTotal > 0 && <Text size="caption" color={ORANGE}>{`● ${unreadTotal} new`}</Text>}
         <Text size="caption" color={C.subtle}>·</Text>
-        <Button key="band:push" plain onPress={() => void $.prompt.submit({ text: '/push' } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))}>
+        <Button key="band:push" plain onPress={() => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))}>
           <Text size="caption" color={C.subtle}>↑ Push</Text>
         </Button>
       </Box>
