@@ -1,0 +1,13 @@
+{
+  "name": "claude-github-panel",
+  "description": "GitHub repo side panel for Claude Code",
+  "owner": {
+    "name": "laurensanp"
+  },
+  "plugins": [
+    {
+      "name": "github-panel",
+      "source": "./"
+    }
+  ]
+}

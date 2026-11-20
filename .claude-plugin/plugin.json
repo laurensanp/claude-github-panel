@@ -1,0 +1,7 @@
+{
+  "name": "github-panel",
+  "version": "0.2.0",
+  "description": "Side panel with the current repo's code, commits, releases, PRs and issues, with comments and pictures",
+  "author": { "name": "laurensanp" },
+  "types": "./types/index.d.ts"
+}
