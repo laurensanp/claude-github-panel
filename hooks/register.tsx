@@ -761,9 +761,13 @@ export const register: Register = on => {
         </Button>
         {unreadTotal > 0 && <Text size="caption" color={ORANGE}>{`● ${unreadTotal} new`}</Text>}
         <Text size="caption" color={C.subtle}>·</Text>
-        <Button key="band:push" plain onPress={() => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))}>
+        {/* green text under a blank Button: the desktop draws a Button's own text in its color */}
+        <Box position="relative">
           <Text size="caption" color={C.open}>↑ Push</Text>
-        </Button>
+          <Box position="absolute" top={0} left={0}>
+            <Button key="band:push" plain label={' '.repeat(6)} onPress={() => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))} />
+          </Box>
+        </Box>
       </Box>
     )
   })
@@ -902,15 +906,19 @@ export const register: Register = on => {
     // "Commit now" / "Push now" is laid over the count (a Box hover can reveal, not swap text).
     const chip = (id: string, label: string, hoverLabel: string, color: string, steps: string) => {
       const go = () => void $.prompt.submit({ text: steps } as any).catch((x: unknown) => $.ui.toast(`Did not start: ${String(x).slice(0, 120)}`))
+      if (!rich) return <Button key={`chip:${id}:go`} plain onPress={go}><Text size="caption" color={color}>{label}</Text></Button>
+      // The desktop draws a Button's text in its own color, so the colored text sits underneath
+      // and a blank Button (en spaces, about one per character) lies on top of it to take the press.
       return (
-        <Box key={`chip:${id}`} position="relative" hover={rich ? { scope: `chip-${id}` } : undefined}>
-          <Button key={`chip:${id}:go`} plain onPress={go}><Text size="caption" color={color}>{label}</Text></Button>
-          {rich && (
-            <Box position="absolute" top={0} left={0} width={label.length} display="none" backgroundColor={C.pane}
-              hover={{ scope: `chip-${id}`, display: 'flex' }}>
-              <Button key={`chip:${id}:now`} plain onPress={go}><Text size="caption" color={color} underline>{hoverLabel}</Text></Button>
-            </Box>
-          )}
+        <Box key={`chip:${id}`} position="relative" hover={{ scope: `chip-${id}` }}>
+          <Text size="caption" color={color}>{label}</Text>
+          <Box key={`chip:${id}:now`} position="absolute" top={0} left={0} display="none" backgroundColor={C.pane}
+            hover={{ scope: `chip-${id}`, display: 'flex' }}>
+            <Text size="caption" color={color} underline>{hoverLabel}</Text>
+          </Box>
+          <Box position="absolute" top={0} left={0}>
+            <Button key={`chip:${id}:go`} plain label={' '.repeat(label.length)} onPress={go} />
+          </Box>
         </Box>
       )
     }
