@@ -417,7 +417,7 @@ const COMMIT_STEPS = (dir: string) => `Commit the uncommitted changes of the rep
 3. Commit in small commits by topic. Message: one plain sentence saying what changed for users, no prefix, no trailing period (like "Frame Generation up to 6x where the driver offers it").
 4. Commit everything else without asking, test files and small leftovers included. Only leave out secrets (.env, tokens, credentials) and build output, and say which files you left out.
 5. No version bump and no push: that is what Push does. Tell me in a few lines what you committed.`
-let bandShown = false // the GitHub button under Claude's message box
+let bandShown = false // the GitHub button above Claude's message box
 let unreadTotal = 0 // unread issues and PRs, for that button
 let watcher: { stop: () => void } | null = null
 let pasteTarget = '' // the comment box on screen, '' when none
@@ -749,15 +749,13 @@ const LANG: Record<string, string> = { ts: 'typescript', tsx: 'tsx', js: 'javasc
 const open = ($: EngineInterface) => $.ui.open({ id: PANE, title: 'GitHub', columns: 72, backgroundColor: C.pane })
 
 export const register: Register = on => {
-  // Always in reach: GitHub and Push in the line under Claude's message box, after the
-  // app's own hint (the app's toolbars are not open to mods). Shown in git repositories only.
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    if (!bandShown) return next(e)
-    const { Box, Button, Text } = $.ui.resolve(e) as any
-    const own = await next(e)
+  // Always in reach: a GitHub button in the row above Claude's message box (the app's own
+  // toolbars are not open to mods). Shown in git repositories only.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!bandShown || (e.props as any).hasSurvey) return next(e)
+    const { Box, Button, Text, Svg } = $.ui.resolve(e) as any
     return (
-      <Box flexDirection="row" gap={1} alignItems="center">
-        {own}
+      <Box flexDirection="row" gap={1} alignItems="center" justifyContent="flex-end">
         <Button key="band:open" plain onPress={() => void open($)}>
           <Text size="caption" color={C.subtle}>◆ GitHub</Text>
         </Button>

@@ -264,17 +264,16 @@ test('/push hands Claude the push steps', async ($, on) => {
   expect(r.context?.[0]).toContain('Push all current progress')
 })
 
-test('the Push button under the prompt starts the push steps', async ($, on) => {
+test('the Push button above the prompt starts the push steps', async ($, on) => {
   const asked: string[] = []
   on('prompt.submit', (_, e) => (asked.push((e as any).text), { text: (e as any).text }) as any)
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'true', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('command.register', () => ({ value: {} }) as any)
   on('clock.every', () => ({ value: {} }) as any)
   on('session.start', (_, e) => ({ cwd: (e as any).cwd }) as any)
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['? for shortcuts'] }) as any) // the app's own hint line, drawn beneath the plugin
   on('ui.open', () => ({ value: { isPlaced: true } }) as any)
   await ($ as any).session.start({ cwd: 'C:/x/repo' })
-  const ui = await $.ui.mount({ plugin: 'github-panel', component: 'PromptHint', surface: 'desktop', props: { isDraft: false, isWorking: false, hint: '' } } as any)
+  const ui = await $.ui.mount({ plugin: 'github-panel', component: 'AbovePrompt', surface: 'desktop', props: {} } as any)
   await ui.press({ key: 'band:push' })
   for (let i = 0; i < 50 && !asked.length; i++) await new Promise(r => setTimeout(r, 10))
   expect(asked[0]).toContain('Push all current progress')
