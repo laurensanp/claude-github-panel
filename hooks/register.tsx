@@ -422,7 +422,7 @@ const COMMIT_STEPS = (dir: string) => `Commit the uncommitted changes of the rep
 1. Read the repository's CLAUDE.md (and README) first; its rules win over these steps.
 2. \`git status\` and \`git diff\`: see every change, untracked files included.
 3. Commit in small commits by topic. Message: one plain sentence saying what changed for users, no prefix, no trailing period (like "Frame Generation up to 6x where the driver offers it").
-4. Never commit secrets (.env, tokens, credentials), build output or files that look like leftovers or tests (ask me about those instead).
+4. Commit everything else without asking, test files and small leftovers included. Only leave out secrets (.env, tokens, credentials) and build output, and say which files you left out.
 5. No version bump and no push: that is what Push does. Tell me in a few lines what you committed.`
 let bandShown = false // the GitHub button above Claude's message box
 let unreadTotal = 0 // unread issues and PRs, for that button
