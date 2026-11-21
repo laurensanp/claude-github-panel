@@ -417,6 +417,13 @@ const PUSH_STEPS = (dir: string) => `Push all current progress of the repository
 6. Release, if the project makes releases (tags, GitHub releases, a release workflow, or a Releases list in CLAUDE.md): build, then \`gh release create v<version> <only this project's own files> --title "<Name> <version>" --latest --notes-file <notes>\` with the title as the earlier releases have it, notes saying what changed for users; never attach other projects' files. Where a workflow releases on push to main, the bump is the release: check it ran. Then Modrinth, if the project is there, as its CLAUDE.md says: changelog for players, nothing about building.
 7. Update the Releases list in CLAUDE.md (newest first: "- v<version> (<date>): what changed. Modrinth <id>.") and commit it as "CLAUDE.md: <Name> <version> published", then push again.
 8. Tell me in a few lines what was pushed, the version, and the release and Modrinth links. If a step was refused or needs me (a payment, a login, a blocked command), stop there and tell me what to do.`
+const COMMIT_STEPS = (dir: string) => `Commit the uncommitted changes of the repository I am working on${dir ? ` (${dir})` : ''}, the way I always do it, without pushing:
+
+1. Read the repository's CLAUDE.md (and README) first; its rules win over these steps.
+2. \`git status\` and \`git diff\`: see every change, untracked files included.
+3. Commit in small commits by topic. Message: one plain sentence saying what changed for users, no prefix, no trailing period (like "Frame Generation up to 6x where the driver offers it").
+4. Never commit secrets (.env, tokens, credentials), build output or files that look like leftovers or tests (ask me about those instead).
+5. No version bump and no push: that is what Push does. Tell me in a few lines what you committed.`
 let bandShown = false // the GitHub button above Claude's message box
 let unreadTotal = 0 // unread issues and PRs, for that button
 let watcher: { stop: () => void } | null = null
@@ -898,6 +905,22 @@ export const register: Register = on => {
       return next
     })
     const set = (patch: Partial<View>) => go(old => ({ ...old, ...patch }))
+    // "● 1 uncommitted" / "↑ 2 to push" are buttons: pressed, Claude gets the steps; hovered,
+    // "Commit now" / "Push now" is laid over the count (a Box hover can reveal, not swap text).
+    const chip = (id: string, label: string, hoverLabel: string, color: string, steps: string) => {
+      const go = () => void $.prompt.submit({ text: steps } as any).catch((x: unknown) => $.ui.toast(`Did not start: ${String(x).slice(0, 120)}`))
+      return (
+        <Box key={`chip:${id}`} position="relative" hover={rich ? { scope: `chip-${id}` } : undefined}>
+          <Button key={`chip:${id}:go`} plain onPress={go}><Text size="caption" color={color}>{label}</Text></Button>
+          {rich && (
+            <Box position="absolute" top={0} left={0} width={label.length} display="none" backgroundColor={C.pane}
+              hover={{ scope: `chip-${id}`, display: 'flex' }}>
+              <Button key={`chip:${id}:now`} plain onPress={go}><Text size="caption" color={color} underline>{hoverLabel}</Text></Button>
+            </Box>
+          )}
+        </Box>
+      )
+    }
     const toEnd = () => { $.clock.after(450, () => void $.ui.scroll({ in: PANE, to: 'end' } as any).catch(() => {})) }
     const push = (d: Detail) => {
       go(old => ({ ...old, stack: [...old.stack, d], sub: 'conversation' }))
@@ -1049,23 +1072,8 @@ export const register: Register = on => {
           {local && <Text size="caption" color={C.subtle} wrap="truncate-end">on <Text color={ORANGE} bold>{local.branch}</Text></Text>}
           {repo && <Text size="caption" color={C.subtle}>★ <Text bold color={C.text}>{repo.stars}</Text> stars</Text>}
           {repo && <Text size="caption" color={C.subtle}>⑂ <Text bold color={C.text}>{repo.forks}</Text> forks</Text>}
-          {local && local.changed > 0 && <Text size="caption" color="#d29922">● {local.changed} uncommitted</Text>}
-          {local && local.ahead > 0 && (() => {
-            // "↑ 2 to push" is the Push button too; hovered, "↑ Push now" is laid over it.
-            const label = `↑ ${local.ahead} to push`
-            const push = () => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))
-            return (
-              <Box key="aheadchip" position="relative" hover={rich ? { scope: 'pushnow' } : undefined}>
-                <Button key="ahead:push" plain onPress={push}><Text size="caption" color={C.open}>{label}</Text></Button>
-                {rich && (
-                  <Box position="absolute" top={0} left={0} width={label.length} display="none" backgroundColor={C.pane}
-                    hover={{ scope: 'pushnow', display: 'flex' }}>
-                    <Button key="ahead:pushnow" plain onPress={push}><Text size="caption" color={C.open} underline>↑ Push now</Text></Button>
-                  </Box>
-                )}
-              </Box>
-            )
-          })()}
+          {local && local.changed > 0 && chip('commit', `● ${local.changed} uncommitted`, '● Commit now', '#d29922', COMMIT_STEPS(repoTop))}
+          {local && local.ahead > 0 && chip('push', `↑ ${local.ahead} to push`, '↑ Push now', C.open, PUSH_STEPS(repoTop))}
           {local && local.behind > 0 && <Text size="caption" color={C.closed}>↓ {local.behind} to pull</Text>}
         </Box>
         {repo && repo.languages.length > 0 && Svg && (
