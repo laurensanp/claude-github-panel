@@ -2,7 +2,7 @@
 
 A side panel in the Claude Code desktop app that shows the GitHub repository of the folder you are working in: code, commits, pull requests, issues and releases, all readable inside the panel. You can comment on issues, PRs and commits (with pictures and files), edit and delete your own comments, and the panel updates live.
 
-Open it with `/github`, or with the GitHub button in the row above the message box (shown in git repositories).
+Open it with `/github`, or with the GitHub button in the line under the message box (shown in git repositories).
 
 ## Requirements
 
@@ -45,7 +45,7 @@ Paste this into Claude Code:
 - **Your messages**: Edit puts the text into the message box at the bottom (➤ saves, Cancel above the box); Delete asks first.
 - **Back and forward**: the back link, or mouse buttons 4 and 5 while the panel has focus.
 - `/comment <text>` in Claude's own box comments on whatever is open in the panel.
-- **Push** (next to the GitHub button above the message box, or the green "↑ 2 to push" in the panel's header, which reads "Push now" on hover) or `/push`: Claude commits what is left in small commits, bumps the version if the changes need one (semver), pushes, makes the GitHub release (and Modrinth, where the project's CLAUDE.md says so) and notes it in CLAUDE.md. A project's own "Releases" section in CLAUDE.md wins over the default steps. Claude asks before merging a branch into main, and stops to ask when something needs you.
+- **Push** (next to the GitHub button under the message box, or the green "↑ 2 to push" in the panel's header, which reads "Push now" on hover) or `/push`: Claude commits what is left in small commits, bumps the version if the changes need one (semver), pushes, makes the GitHub release (and Modrinth, where the project's CLAUDE.md says so) and notes it in CLAUDE.md. A project's own "Releases" section in CLAUDE.md wins over the default steps. Claude asks before merging a branch into main, and stops to ask when something needs you.
 - **Commit** (the orange "● 1 uncommitted" in the panel's header, "Commit now" on hover): Claude commits the changes in small commits by topic, without a version bump or push. Everything is committed except secrets and build output.
 - The tabs always stay on one row: in a narrow panel the counts go first, then the names of the tabs that aren't open.
 
