@@ -765,7 +765,7 @@ export const register: Register = on => {
         <Box position="relative">
           <Text size="caption" color={C.open}>↑ Push</Text>
           <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
-            <Button key="band:push" plain label={' '.repeat(12)} onPress={() => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))} />
+            <Box width={18} flexShrink={0}><Button key="band:push" plain label={' '.repeat(12)} onPress={() => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))} /></Box>
           </Box>
         </Box>
       </Box>
@@ -917,7 +917,7 @@ export const register: Register = on => {
             <Text size="caption" color={color} underline>{hoverLabel}</Text>
           </Box>
           <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
-            <Button key={`chip:${id}:go`} plain label={' '.repeat(label.length * 2)} onPress={go} />
+            <Box width={label.length * 3} flexShrink={0}><Button key={`chip:${id}:go`} plain label={' '.repeat(label.length * 2)} onPress={go} /></Box>
           </Box>
         </Box>
       )
