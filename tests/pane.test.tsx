@@ -94,6 +94,8 @@ test('tabs draw, an issue opens inside the panel', async ($, on) => {
       expect(await seen({ key: 'menu:issue|3:clipboard' }), 'menu open').toBeDefined()
       expect(await ui.find({ key: 'menu:issue|3:link' }), 'no path option').toBeUndefined()
       await pressWhenDrawn({ key: 'add:issue|3' })
+      // Every message has Copy, since panel text cannot be selected.
+      expect(await seen({ type: 'Text', text: /⎘ Copy/ }), 'copy button').toBeDefined()
       // Your own message: Edit saves through the API, Delete asks first, then deletes.
       await pressWhenDrawn({ key: 'edit:ic:777:open' })
       await seen({ key: 'edit:ic:777' })

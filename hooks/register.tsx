@@ -1226,8 +1226,8 @@ export const register: Register = on => {
     // A small action: icon + label in one row, the label the button; tinted on hover.
     // Hover = the button: anything drawn outside a Button (an icon, a pill) is not lit by
     // its hover, so a small action's glyph is part of the button's own text.
-    const ACTION_GLYPH: Record<string, string> = { pencil: '✎', trash: '✕', close: '⊗', issueOpen: '↺' }
-    const action = (key: string, ic: string, label: string, onPress: () => void, color = C.muted) => (
+    const ACTION_GLYPH: Record<string, string> = { pencil: '✎', trash: '✕', copy: '⎘', close: '⊗', issueOpen: '↺' }
+    const action = (key: string, ic: string, label: string, onPress: (e: any) => void, color = C.muted) => (
       <Button key={key} plain onPress={onPress}><Text size="caption" color={color}>{`${ACTION_GLYPH[ic] ?? ''} ${label}`.trim()}</Text></Button>
     )
     // What a message can be changed through: the opening post, an issue/PR comment, a commit comment.
@@ -1294,13 +1294,16 @@ export const register: Register = on => {
                   {md(`md:${key}`, body)}
                 </Box>
               )}
-            {mine && act && !editing && (
+            {!editing && (
               <Box flexDirection="row" columnGap={0}>
-                {action(`edit:${ek}:open`, 'pencil', 'Edit', () => {
+                {/* panel text cannot be selected with the mouse, so a message is copied whole */}
+                {action(`copy:${key}`, 'copy', 'Copy', press => void $.ui.copy({ text: body, surface: press.surface })
+                  .then(r => $.ui.toast(r.isCopied ? 'Copied' : `Not copied: ${(r as any).reason ?? ''}`), () => $.ui.toast('Not copied')))}
+                {mine && act && action(`edit:${ek}:open`, 'pencil', 'Edit', () => {
                   edits.set(ek, { text: body }); setDraft(`edit|${ek}`, { text: body })
                   editTarget = { k: slotKey(act.d), ek }; redraw()
                 })}
-                {act.type !== 'body' && (
+                {mine && act && act.type !== 'body' && (
                   action(`delete:${ek}`, 'trash', 'Delete', () => { edits.set(ek, { text: body, confirmDelete: true }); redraw() })
                 )}
               </Box>
