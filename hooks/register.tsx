@@ -56,7 +56,6 @@ const ICON: Record<string, string> = {
   pencil: '<path d="M10.75 2.75l2.5 2.5-7.5 7.5H3.25v-2.5z"/>',
   trash: '<path d="M2.75 4.25h10.5M6.25 4.25V2.75h3.5v1.5M4.25 4.25l.75 9h6l.75-9"/>',
   close: '<circle cx="8" cy="8" r="6.25"/><path d="M5.75 5.75l4.5 4.5M10.25 5.75l-4.5 4.5"/>',
-  link: '<path d="M6.75 9.25a2.75 2.75 0 0 0 3.9 0l2.1-2.1a2.75 2.75 0 0 0-3.9-3.9l-.9.9M9.25 6.75a2.75 2.75 0 0 0-3.9 0l-2.1 2.1a2.75 2.75 0 0 0 3.9 3.9l.9-.9"/>',
 }
 
 // GitHub's mark (Primer Octicons, MIT).
@@ -269,7 +268,7 @@ async function markSeen($: EngineInterface, repo: Repo | null, key: string) {
 // --- comment drafts ---
 // Per issue, PR or commit: the text being written, files to attach, and what the
 // last send did. Module memory: a reload of the mod starts them over.
-type Draft = { text: string; files: string[]; busy?: string; error?: string; note?: string; preview?: boolean; pathField?: boolean; menu?: boolean }
+type Draft = { text: string; files: string[]; busy?: string; error?: string; note?: string; preview?: boolean; menu?: boolean }
 const drafts = new Map<string, Draft>()
 const draftOf = (k: string): Draft => drafts.get(k) ?? { text: '', files: [] }
 const setDraft = (k: string, patch: Partial<Draft>) => drafts.set(k, { ...draftOf(k), ...patch })
@@ -341,12 +340,6 @@ async function typed($: EngineInterface, k: string, t: string) {
       else redraw()
     })
     return
-  }
-  const added = t.startsWith(before) ? t.slice(before.length).trim() : ''
-  const paths = added.split(/\r?\n/).map(x => x.trim()).filter(Boolean)
-  if (paths.length && paths.every(x => /^"?[A-Za-z]:\\[^"]+"?$/.test(x))) {
-    setDraft(k, { text: before })
-    await addFiles($, k, paths)
   }
 }
 
@@ -1453,11 +1446,6 @@ export const register: Register = on => {
       return (
         <Box key={`composer:${k}`} flexDirection="column" gap={0}>
           {dr.files.length > 0 && <Box flexDirection="row" columnGap={2} rowGap={1} flexWrap="wrap" paddingX={1}>{dr.files.map(thumb)}</Box>}
-          {canAttach && dr.pathField && (
-            <Input key={`attach:${k}`} value="" submitLabel="add" autoFocus
-              placeholder="A file path (Shift+right-click a file, Copy as path), then Enter"
-              onSubmit={(t: string) => { setDraft(k, { pathField: false }); void addFiles($, k, t.split(/\r?\n/)) }} />
-          )}
           {/* Discord-style bar: ＋ for attachments on the left, the field beside it. A field in a
               row shrinks to its placeholder, so its box gets the panel's width in cells. */}
           <Box flexDirection="row" gap={1} alignItems="flex-start" position="relative">
@@ -1465,7 +1453,7 @@ export const register: Register = on => {
               // Top-aligned with the field's own ➤, which the app draws 5 px down from its top.
               <Box key={`addwrap:${k}`} flexDirection="column" gap={0}>
                 {Svg ? <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="1" height="5"><rect width="1" height="5" fill="#000" fill-opacity="0"/></svg>`} alt="gap" width={1} height={5} /> : null}
-                <Button key={`add:${k}`} variant={dr.menu ? 'primary' : 'secondary'} onPress={() => { setDraft(k, { menu: !draftOf(k).menu, pathField: false }); redraw() }}>＋</Button>
+                <Button key={`add:${k}`} variant={dr.menu ? 'primary' : 'secondary'} onPress={() => { setDraft(k, { menu: !draftOf(k).menu }); redraw() }}>＋</Button>
               </Box>
             )}
             {canAttach && dr.menu && (
@@ -1475,11 +1463,10 @@ export const register: Register = on => {
                 {([
                   ['upload', 'Upload a file', () => void pickFiles($, k)],
                   ['clipboard', 'Paste from clipboard', () => void pasteClipboard($, k)],
-                  ['link', 'Enter a file path', () => { setDraft(k, { menu: false, pathField: true }); redraw() }],
                 ] as [string, string, () => void][]).map(([ic, label, act]) => (
                   // No border per row: each one added a row above and below (too tall).
                   <Button key={`menu:${k}:${ic}`} plain onPress={act}>
-                    <Text color={C.text}>{`${({ upload: '↑', clipboard: '⎘', link: '⌨' } as Record<string, string>)[ic] ?? ''}  ${label}`}</Text>
+                    <Text color={C.text}>{`${({ upload: '↑', clipboard: '⎘' } as Record<string, string>)[ic] ?? ''}  ${label}`}</Text>
                   </Button>
                 ))}
               </Box>

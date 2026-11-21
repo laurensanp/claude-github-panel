@@ -41,7 +41,7 @@ Paste this into Claude Code:
 - **Tabs**: Code, Commits, PRs, Issues, Releases. An orange dot with a number marks unread activity.
 - **Open anything**: click an issue, PR, commit or release to read it in the panel. Click a picture to see it large.
 - **Comment**: type in the box at the bottom. Enter sends, Ctrl+Enter (or Shift+Enter) starts a new line.
-- **Attach**: Ctrl+V a copied picture or file, or use **+** (Upload a file, Paste from clipboard, Enter a file path).
+- **Attach**: Ctrl+V a copied picture or file, or use **+** (Upload a file, Paste from clipboard).
 - **Your messages**: Edit puts the text into the message box at the bottom (➤ saves, Cancel above the box); Delete asks first.
 - **Back and forward**: the back link, or mouse buttons 4 and 5 while the panel has focus.
 - `/comment <text>` in Claude's own box comments on whatever is open in the panel.

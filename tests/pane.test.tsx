@@ -89,10 +89,11 @@ test('tabs draw, an issue opens inside the panel', async ($, on) => {
       expect(await seen({ key: 'menu:issue|3:upload' }), 'menu').toBeDefined()
       await pressWhenDrawn({ key: 'menu:issue|3:upload' })
       expect(await seen({ key: 'unattach:issue|3:picked.png' }), 'picked file').toBeDefined()
-      // Enter a file path opens the path field.
+      // The menu has no "Enter a file path" any more.
       await pressWhenDrawn({ key: 'add:issue|3' })
-      await pressWhenDrawn({ key: 'menu:issue|3:link' })
-      expect(await seen({ key: 'attach:issue|3' }), 'attachment field').toBeDefined()
+      expect(await seen({ key: 'menu:issue|3:clipboard' }), 'menu open').toBeDefined()
+      expect(await ui.find({ key: 'menu:issue|3:link' }), 'no path option').toBeUndefined()
+      await pressWhenDrawn({ key: 'add:issue|3' })
       // Your own message: Edit saves through the API, Delete asks first, then deletes.
       await pressWhenDrawn({ key: 'edit:ic:777:open' })
       await seen({ key: 'edit:ic:777' })
