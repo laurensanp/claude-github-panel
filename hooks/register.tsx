@@ -361,39 +361,7 @@ const PASTE_WATCH_PS = [
   '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
   'Add-Type -AssemblyName System.Windows.Forms, System.Drawing',
   "Add-Type 'using System; using System.Runtime.InteropServices; public class K { [DllImport(\"user32.dll\")] public static extern short GetAsyncKeyState(int k); [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); }'",
-  // Mouse buttons 4/5: a low-level mouse hook on its own thread. While Block is set (the
-  // panel has the keyboard and Claude is in front) it keeps the press from the app and
-  // reports it; otherwise every click passes untouched. Windows drops the hook when this
-  // process ends, and skips it should it ever stall.
-  "Add-Type -TypeDefinition @'",
-  'using System; using System.Threading; using System.Runtime.InteropServices;',
-  'public static class M {',
-  '  public static volatile bool Block; public static volatile int Pending;',
-  '  delegate IntPtr Proc(int n, IntPtr w, IntPtr l);',
-  '  [StructLayout(LayoutKind.Sequential)] struct PT { public int x, y; }',
-  '  [StructLayout(LayoutKind.Sequential)] struct HS { public PT pt; public uint data, flags, time; public IntPtr extra; }',
-  '  [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr h; public uint m; public IntPtr w, l; public uint t; public PT p; }',
-  '  [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, Proc fn, IntPtr mod, uint tid);',
-  '  [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int n, IntPtr w, IntPtr l);',
-  '  [DllImport("user32.dll")] static extern int GetMessage(out MSG m, IntPtr h, uint a, uint b);',
-  '  [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string n);',
-  '  static IntPtr hook; static Proc keep = OnMouse;',
-  '  static IntPtr OnMouse(int n, IntPtr w, IntPtr l) {',
-  '    int m = (int)w;',
-  '    if (n >= 0 && Block && (m == 0x020B || m == 0x020C)) {',
-  '      if (m == 0x020B) { HS s = (HS)Marshal.PtrToStructure(l, typeof(HS)); Pending = (int)(s.data >> 16); }',
-  '      return (IntPtr)1;',
-  '    }',
-  '    return CallNextHookEx(hook, n, w, l);',
-  '  }',
-  '  public static void Start() {',
-  '    Thread t = new Thread(() => { hook = SetWindowsHookEx(14, keep, GetModuleHandle(null), 0); MSG msg; while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0) { } });',
-  '    t.IsBackground = true; t.Start();',
-  '  }',
-  '}',
-  "'@",
-  '[M]::Start()',
-  '$focusFile = Join-Path $env:TEMP "github-panel-focus"; $tick = 0',
+  '$prevX1 = $false; $prevX2 = $false',
   'function Read-Clip {',
   '  for ($try = 0; $try -lt 4; $try++) {',
   '    try {',
@@ -426,14 +394,12 @@ const PASTE_WATCH_PS = [
   '    $enter = (([K]::GetAsyncKeyState(0x0D) -band 0x8000) -ne 0)',
   "    if ($enter -and -not $prevEnter -and $mod) { [Console]::Out.WriteLine('NEWLINE'); [Console]::Out.Flush() }",
   '    $prevEnter = $enter',
-  '    if ($tick % 4 -eq 0) {',
-  '      $fid = 0; [void][K]::GetWindowThreadProcessId([K]::GetForegroundWindow(), [ref]$fid)',
-  "      $front = (Get-Process -Id $fid).ProcessName -ieq 'claude'",
-  "      [M]::Block = $front -and (Test-Path $focusFile) -and ((Get-Content -Raw $focusFile) -eq '1')",
+  '    $x1 = (([K]::GetAsyncKeyState(0x05) -band 0x8000) -ne 0); $x2 = (([K]::GetAsyncKeyState(0x06) -band 0x8000) -ne 0)',
+  '    if (($x1 -and -not $prevX1) -or ($x2 -and -not $prevX2)) {',
+  '      $id = 0; [void][K]::GetWindowThreadProcessId([K]::GetForegroundWindow(), [ref]$id)',
+  "      if ((Get-Process -Id $id).ProcessName -ieq 'claude') { [Console]::Out.WriteLine($(if ($x1 -and -not $prevX1) { 'BACK' } else { 'FORWARD' })); [Console]::Out.Flush() }",
   '    }',
-  '    $tick++',
-  '    $b = [M]::Pending',
-  "    if ($b -ne 0) { [M]::Pending = 0; [Console]::Out.WriteLine($(if ($b -eq 1) { 'BACK' } else { 'FORWARD' })); [Console]::Out.Flush() }",
+  '    $prevX1 = $x1; $prevX2 = $x2',
   '    $prev = $down',
   '  } catch { $prev = $false }',
   '  Start-Sleep -Milliseconds 25',
@@ -556,7 +522,6 @@ type Pic = Shrunk & { file: string; mime: string; bytes: number }
 const pictures = new Map<string, Pic | null | 'loading'>()
 const large = new Map<string, Shrunk | null | 'loading'>()
 let tmpDir = ''
-let focusWritten = false // the focus file the mouse hook reads holds the current state
 async function tempDir($: EngineInterface) {
   if (!tmpDir) tmpDir = (await run($, ['cmd', '/d', '/c', 'echo %TEMP%'])).trim().split('\\').join('/')
   return tmpDir
@@ -833,10 +798,7 @@ export const register: Register = on => {
 
   // The watcher lives while the panel is open; closing the panel ends it.
   on('ui.close', async ($, e, next) => {
-    if ((e as any).id === PANE) {
-      stopWatcher(); paneFocused = false
-      if (tmpDir) void $.fs.write(`${tmpDir}/github-panel-focus`, '0').catch(() => {})
-    }
+    if ((e as any).id === PANE) { stopWatcher(); paneFocused = false }
     return next(e)
   })
 
@@ -948,10 +910,6 @@ export const register: Register = on => {
     redraw = () => $.ui.invalidate('ui.render')
     pasteTarget = ''
     const focusedNow = !!(e.props as any).isFocused
-    if (focusedNow !== paneFocused || !focusWritten) {
-      focusWritten = !!tmpDir
-      if (tmpDir) void $.fs.write(`${tmpDir}/github-panel-focus`, focusedNow ? '1' : '0').catch(() => {})
-    }
     paneFocused = focusedNow
     if (!me && !meAsked) { meAsked = true; void run($, ['gh', 'api', 'user', '-q', '.login']).then(t => { me = t.trim(); redraw() }, () => { meAsked = false }) }
     if (!tmpDir) void tempDir($).catch(() => {})
