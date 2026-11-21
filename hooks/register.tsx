@@ -762,7 +762,7 @@ export const register: Register = on => {
         {unreadTotal > 0 && <Text size="caption" color={ORANGE}>{`● ${unreadTotal} new`}</Text>}
         <Text size="caption" color={C.subtle}>·</Text>
         <Button key="band:push" plain onPress={() => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))}>
-          <Text size="caption" color={C.subtle}>↑ Push</Text>
+          <Text size="caption" color={C.open}>↑ Push</Text>
         </Button>
       </Box>
     )
@@ -1065,7 +1065,7 @@ export const register: Register = on => {
           {local && <Text size="caption" color={C.subtle} wrap="truncate-end">on <Text color={ORANGE} bold>{local.branch}</Text></Text>}
           {repo && <Text size="caption" color={C.subtle}>★ <Text bold color={C.text}>{repo.stars}</Text> stars</Text>}
           {repo && <Text size="caption" color={C.subtle}>⑂ <Text bold color={C.text}>{repo.forks}</Text> forks</Text>}
-          {local && local.changed > 0 && chip('commit', `● ${local.changed} uncommitted`, '● Commit now', '#d29922', COMMIT_STEPS(repoTop))}
+          {local && local.changed > 0 && chip('commit', `● ${local.changed} uncommitted`, '● Commit now', ORANGE, COMMIT_STEPS(repoTop))}
           {local && local.ahead > 0 && chip('push', `↑ ${local.ahead} to push`, '↑ Push now', C.open, PUSH_STEPS(repoTop))}
           {local && local.behind > 0 && <Text size="caption" color={C.closed}>↓ {local.behind} to pull</Text>}
         </Box>
