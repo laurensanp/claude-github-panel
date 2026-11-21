@@ -1390,6 +1390,10 @@ export const register: Register = on => {
       const lines = text.split(/\r?\n/).reduce((n, l) => n + Math.max(1, Math.ceil(l.length / width)), 0)
       return Math.min(Math.max(2, lines), Math.max(3, Math.floor(bodyRows * 0.4)))
     }
+    // The message box is drawn last, under everything, and pushed to the panel's bottom
+    // when the conversation is shorter than the panel.
+    let docked: any = null
+    const dock = (d: Detail) => { docked = composer(d); return null }
     const composer = (d: Detail) => {
       const { Input } = els as any
       const k = slotKey(d)
@@ -1543,7 +1547,7 @@ export const register: Register = on => {
             {comment('body', x.author?.login ?? '?', x.createdAt, x.body, 'opened', true, { type: 'body', d })}
             {x.comments.map((c: any, i: number) =>
               comment(`c${i}`, c.author?.login ?? '?', c.createdAt, c.body, 'commented', c.author?.login === x.author?.login, commentAct(d, c.url)))}
-            {composer(d)}
+            {dock(d)}
           </Box>
         )
       }
@@ -1571,7 +1575,7 @@ export const register: Register = on => {
           inner = [
             comment('body', x.author?.login ?? '?', x.createdAt, x.body, 'opened', true, { type: 'body', d }),
             ...timeline.map((t: any, i: number) => comment(`t${i}`, t.who ?? '?', t.when, t.body, t.note, t.who === x.author?.login, t.url ? commentAct(d, t.url) : undefined)),
-            composer(d),
+            dock(d),
           ]
         }
         return (
@@ -1621,7 +1625,7 @@ export const register: Register = on => {
             {diffFiles(x.diff)}
             {(await get(`ccomments|${d.id}`, true, () => commitCommentsOf($, d.id)).catch(() => [] as any[])).map((c: any, i: number) =>
               comment(`cc${i}`, c.user?.login ?? '?', c.created_at, c.body + (c.path ? `\n\n*on ${c.path}${c.line ? ` line ${c.line}` : ''}*` : ''), 'commented', false, { type: 'cc', id: String(c.id), d }))}
-            {composer(d)}
+            {dock(d)}
           </Box>
         )
       }
@@ -1769,10 +1773,13 @@ export const register: Register = on => {
     else stopWatcher()
 
     return (
-      <Box flexDirection="column" gap={1} paddingX={1} paddingY={1}>
+      <Box flexDirection="column" gap={1} paddingX={1} paddingY={1}
+        minHeight={docked ? (((e.props as any).scroll?.bodyRows ?? 0) as number) || undefined : undefined}>
         {header}
         {tabs}
         {body}
+        {docked && <Box key="dockspace" flexGrow={1} />}
+        {docked}
       </Box>
     )
   })
