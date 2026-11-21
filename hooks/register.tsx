@@ -764,8 +764,8 @@ export const register: Register = on => {
         {/* green text under a blank Button: the desktop draws a Button's own text in its color */}
         <Box position="relative">
           <Text size="caption" color={C.open}>↑ Push</Text>
-          <Box position="absolute" top={0} left={0}>
-            <Button key="band:push" plain label={' '.repeat(6)} onPress={() => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))} />
+          <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
+            <Button key="band:push" plain label={' '.repeat(12)} onPress={() => void $.prompt.submit({ text: PUSH_STEPS(repoTop) } as any).catch((x: unknown) => $.ui.toast(`Push did not start: ${String(x).slice(0, 120)}`))} />
           </Box>
         </Box>
       </Box>
@@ -908,7 +908,7 @@ export const register: Register = on => {
       const go = () => void $.prompt.submit({ text: steps } as any).catch((x: unknown) => $.ui.toast(`Did not start: ${String(x).slice(0, 120)}`))
       if (!rich) return <Button key={`chip:${id}:go`} plain onPress={go}><Text size="caption" color={color}>{label}</Text></Button>
       // The desktop draws a Button's text in its own color, so the colored text sits underneath
-      // and a blank Button (en spaces, about one per character) lies on top of it to take the press.
+      // and a blank Button lies on top, cut to the text's size so its hover fits the text.
       return (
         <Box key={`chip:${id}`} position="relative" hover={{ scope: `chip-${id}` }}>
           <Text size="caption" color={color}>{label}</Text>
@@ -916,8 +916,8 @@ export const register: Register = on => {
             hover={{ scope: `chip-${id}`, display: 'flex' }}>
             <Text size="caption" color={color} underline>{hoverLabel}</Text>
           </Box>
-          <Box position="absolute" top={0} left={0}>
-            <Button key={`chip:${id}:go`} plain label={' '.repeat(label.length)} onPress={go} />
+          <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
+            <Button key={`chip:${id}:go`} plain label={' '.repeat(label.length * 2)} onPress={go} />
           </Box>
         </Box>
       )
