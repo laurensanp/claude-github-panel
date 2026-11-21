@@ -361,6 +361,39 @@ const PASTE_WATCH_PS = [
   '[Console]::OutputEncoding = [Text.Encoding]::UTF8',
   'Add-Type -AssemblyName System.Windows.Forms, System.Drawing',
   "Add-Type 'using System; using System.Runtime.InteropServices; public class K { [DllImport(\"user32.dll\")] public static extern short GetAsyncKeyState(int k); [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); }'",
+  // Mouse buttons 4/5: a low-level mouse hook on its own thread. While Block is set (the
+  // panel has the keyboard and Claude is in front) it keeps the press from the app and
+  // reports it; otherwise every click passes untouched. Windows drops the hook when this
+  // process ends, and skips it should it ever stall.
+  "Add-Type -TypeDefinition @'",
+  'using System; using System.Threading; using System.Runtime.InteropServices;',
+  'public static class M {',
+  '  public static volatile bool Block; public static volatile int Pending;',
+  '  delegate IntPtr Proc(int n, IntPtr w, IntPtr l);',
+  '  [StructLayout(LayoutKind.Sequential)] struct PT { public int x, y; }',
+  '  [StructLayout(LayoutKind.Sequential)] struct HS { public PT pt; public uint data, flags, time; public IntPtr extra; }',
+  '  [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr h; public uint m; public IntPtr w, l; public uint t; public PT p; }',
+  '  [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, Proc fn, IntPtr mod, uint tid);',
+  '  [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr h, int n, IntPtr w, IntPtr l);',
+  '  [DllImport("user32.dll")] static extern int GetMessage(out MSG m, IntPtr h, uint a, uint b);',
+  '  [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string n);',
+  '  static IntPtr hook; static Proc keep = OnMouse;',
+  '  static IntPtr OnMouse(int n, IntPtr w, IntPtr l) {',
+  '    int m = (int)w;',
+  '    if (n >= 0 && Block && (m == 0x020B || m == 0x020C)) {',
+  '      if (m == 0x020B) { HS s = (HS)Marshal.PtrToStructure(l, typeof(HS)); Pending = (int)(s.data >> 16); }',
+  '      return (IntPtr)1;',
+  '    }',
+  '    return CallNextHookEx(hook, n, w, l);',
+  '  }',
+  '  public static void Start() {',
+  '    Thread t = new Thread(() => { hook = SetWindowsHookEx(14, keep, GetModuleHandle(null), 0); MSG msg; while (GetMessage(out msg, IntPtr.Zero, 0, 0) > 0) { } });',
+  '    t.IsBackground = true; t.Start();',
+  '  }',
+  '}',
+  "'@",
+  '[M]::Start()',
+  '$focusFile = Join-Path $env:TEMP "github-panel-focus"; $tick = 0',
   'function Read-Clip {',
   '  for ($try = 0; $try -lt 4; $try++) {',
   '    try {',
@@ -393,6 +426,14 @@ const PASTE_WATCH_PS = [
   '    $enter = (([K]::GetAsyncKeyState(0x0D) -band 0x8000) -ne 0)',
   "    if ($enter -and -not $prevEnter -and $mod) { [Console]::Out.WriteLine('NEWLINE'); [Console]::Out.Flush() }",
   '    $prevEnter = $enter',
+  '    if ($tick % 4 -eq 0) {',
+  '      $fid = 0; [void][K]::GetWindowThreadProcessId([K]::GetForegroundWindow(), [ref]$fid)',
+  "      $front = (Get-Process -Id $fid).ProcessName -ieq 'claude'",
+  "      [M]::Block = $front -and (Test-Path $focusFile) -and ((Get-Content -Raw $focusFile) -eq '1')",
+  '    }',
+  '    $tick++',
+  '    $b = [M]::Pending',
+  "    if ($b -ne 0) { [M]::Pending = 0; [Console]::Out.WriteLine($(if ($b -eq 1) { 'BACK' } else { 'FORWARD' })); [Console]::Out.Flush() }",
   '    $prev = $down',
   '  } catch { $prev = $false }',
   '  Start-Sleep -Milliseconds 25',
@@ -422,8 +463,17 @@ let paneFocused = false
 const dismissed = new Set<string>()
 // Messages being edited or about to be deleted, by message.
 const edits = new Map<string, { text: string; confirmDelete?: boolean; busy?: string; error?: string }>()
+// The message being edited in the chat box at the bottom (Discord style): its detail's
+// comment box key and the message's own key.
+let editTarget: { k: string; ek: string } | null = null
 let lastPaste = { line: '', at: 0 }
 let lastPromptUse = 0 // an edit of Claude's own message box
+// Back and forward in the panel, as a browser's: every move (tab, folder, file, item)
+// is a step. Set while the panel is drawn.
+let navBack = () => {}
+let navForward = () => {}
+const past: View[] = []
+const future: View[] = []
 function stopWatcher() { watcher?.stop(); watcher = null }
 function ensureWatcher($: EngineInterface) {
   if (watcher) return
@@ -438,6 +488,9 @@ function ensureWatcher($: EngineInterface) {
         if (stream !== 'stdout') continue
         for (const line of text.split(/\r?\n/)) {
           if (line.startsWith('NEWLINE')) { lastNewlineKey = Date.now(); continue }
+          // Mouse buttons 4 and 5: back and forward, while the panel has the keyboard.
+          if (line.startsWith('BACK')) { if (paneFocused) navBack(); continue }
+          if (line.startsWith('FORWARD')) { if (paneFocused) navForward(); continue }
           if (!line.startsWith('PASTE ')) continue
           const at = Date.now()
           const target = pasteTarget
@@ -503,6 +556,7 @@ type Pic = Shrunk & { file: string; mime: string; bytes: number }
 const pictures = new Map<string, Pic | null | 'loading'>()
 const large = new Map<string, Shrunk | null | 'loading'>()
 let tmpDir = ''
+let focusWritten = false // the focus file the mouse hook reads holds the current state
 async function tempDir($: EngineInterface) {
   if (!tmpDir) tmpDir = (await run($, ['cmd', '/d', '/c', 'echo %TEMP%'])).trim().split('\\').join('/')
   return tmpDir
@@ -664,7 +718,7 @@ async function follow($: EngineInterface, dir: string) {
     const origin = await $.process.run(['git', '-C', t, 'remote', 'get-url', 'origin'])
     if (origin.exitCode !== 0 || !/github\.com/i.test(origin.stdout)) return
     repoDir = t; repoTop = t; repoGen++
-    pending.clear(); slots.clear(); used = new Set(); seen = null; pictures.clear(); large.clear(); unreadTotal = 0
+    pending.clear(); slots.clear(); past.length = 0; future.length = 0; used = new Set(); seen = null; pictures.clear(); large.clear(); unreadTotal = 0
     await update($, view, old => ({ ...old, tab: 'code', dir: '', file: null, stack: [], sub: 'conversation' }))
     bandShown = true
     if (!timer) timer = $.clock.every(TICK_MS, () => void poll($))
@@ -737,9 +791,8 @@ export const register: Register = on => {
     const { Box, Button, Text, Svg } = $.ui.resolve(e) as any
     return (
       <Box flexDirection="row" gap={1} alignItems="center" justifyContent="flex-end">
-        {Svg ? <Svg source={MARK} alt="GitHub" width={14} height={14} /> : null}
         <Button key="band:open" plain onPress={() => void open($)}>
-          <Text size="caption" color={C.subtle}>GitHub</Text>
+          <Text size="caption" color={C.subtle}>◆ GitHub</Text>
         </Button>
         {unreadTotal > 0 && <Text size="caption" color={ORANGE}>{`● ${unreadTotal} new`}</Text>}
         <Text size="caption" color={C.subtle}>·</Text>
@@ -776,6 +829,15 @@ export const register: Register = on => {
   on('command.run', { command: 'github' }, async $ => {
     await open($)
     return { text: 'GitHub panel opened.' }
+  })
+
+  // The watcher lives while the panel is open; closing the panel ends it.
+  on('ui.close', async ($, e, next) => {
+    if ((e as any).id === PANE) {
+      stopWatcher(); paneFocused = false
+      if (tmpDir) void $.fs.write(`${tmpDir}/github-panel-focus`, '0').catch(() => {})
+    }
+    return next(e)
   })
 
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
@@ -864,17 +926,32 @@ export const register: Register = on => {
     const fill = (c: string) => (rich ? c : undefined)
     const edge = rich ? C.edge : 'promptBorder'
     const v = await read($, view)
-    const set = (patch: Partial<View>) => void update($, view, old => ({ ...old, ...patch }))
+    // Every move goes through here, so mouse back/forward can retrace it.
+    const go = (fn: (old: View) => View) => void update($, view, old => {
+      const next = fn(old)
+      if (JSON.stringify(next) !== JSON.stringify(old)) {
+        past.push(old); if (past.length > 100) past.shift()
+        future.length = 0
+      }
+      return next
+    })
+    const set = (patch: Partial<View>) => go(old => ({ ...old, ...patch }))
     const toEnd = () => { $.clock.after(450, () => void $.ui.scroll({ in: PANE, to: 'end' } as any).catch(() => {})) }
     const push = (d: Detail) => {
-      void update($, view, old => ({ ...old, stack: [...old.stack, d], sub: 'conversation' }))
+      go(old => ({ ...old, stack: [...old.stack, d], sub: 'conversation' }))
       if (d.kind !== 'image') toEnd()
     }
-    const back = () => void update($, view, old => ({ ...old, stack: old.stack.slice(0, -1), sub: 'conversation' }))
+    const back = () => go(old => ({ ...old, stack: old.stack.slice(0, -1), sub: 'conversation' }))
+    navBack = () => void update($, view, old => { const p = past.pop(); if (!p) return old; future.push(old); return p })
+    navForward = () => void update($, view, old => { const f = future.pop(); if (!f) return old; past.push(old); return f })
     used = new Set()
     redraw = () => $.ui.invalidate('ui.render')
     pasteTarget = ''
     const focusedNow = !!(e.props as any).isFocused
+    if (focusedNow !== paneFocused || !focusWritten) {
+      focusWritten = !!tmpDir
+      if (tmpDir) void $.fs.write(`${tmpDir}/github-panel-focus`, focusedNow ? '1' : '0').catch(() => {})
+    }
     paneFocused = focusedNow
     if (!me && !meAsked) { meAsked = true; void run($, ['gh', 'api', 'user', '-q', '.login']).then(t => { me = t.trim(); redraw() }, () => { meAsked = false }) }
     if (!tmpDir) void tempDir($).catch(() => {})
@@ -1074,7 +1151,9 @@ export const register: Register = on => {
         {TABS.map(([id, label, , count, fresh]) => {
           const active = v.tab === id && v.stack.length === 0
           return (
-            <Box key={`tabwrap:${id}`} position="relative" flexGrow={1} justifyContent="center" alignItems="center" paddingX={1}>
+            <Box key={`tabwrap:${id}`} flexGrow={1} flexDirection="row" justifyContent="center" alignItems="center">
+              {/* The pill hugs the label's button, so it is exactly what hover lights. */}
+              <Box key={`tabhug:${id}`} position="relative">
               {active && Svg && (
                 <Box position="absolute" left={0} right={0} top={0} bottom={0} justifyContent="center" gap={0}>
                   {roundBar(`pill:${id}`, [{ color: C.accentBg, grow: 1, alt: 'open tab' }], PILL_PX)}
@@ -1083,7 +1162,15 @@ export const register: Register = on => {
               <Button key={`tab:${id}`} plain onPress={() => set({ tab: id, file: null, stack: [] })}>
                 <Text color={active ? C.text : C.subtle}>{tabText(label, count, level, active, id)}</Text>
               </Button>
-              {fresh > 0 && <Box position="absolute" top={-1} right={-1}>{disc(fresh, accent)}</Box>}
+              {fresh > 0 && (
+                // Offsets are whole rows (20 px): one row up, then 13 px down, so the badge
+                // sits on the pill's top-right corner instead of above it.
+                <Box position="absolute" top={-1} right={-1} flexDirection="column" gap={0}>
+                  {Svg ? <Svg source={'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="13"><rect width="1" height="13" fill-opacity="0"/></svg>'} alt="gap" width={1} height={13} /> : null}
+                  {disc(fresh, accent)}
+                </Box>
+              )}
+              </Box>
             </Box>
           )
         })}
@@ -1170,11 +1257,11 @@ export const register: Register = on => {
     }
     // A comment as a chat message: yours on the right in the accent, others on the left.
     // A small action: icon + label in one row, the label the button; tinted on hover.
+    // Hover = the button: anything drawn outside a Button (an icon, a pill) is not lit by
+    // its hover, so a small action's glyph is part of the button's own text.
+    const ACTION_GLYPH: Record<string, string> = { pencil: '✎', trash: '✕', close: '⊗', issueOpen: '↺' }
     const action = (key: string, ic: string, label: string, onPress: () => void, color = C.muted) => (
-      <Box key={`actbox:${key}`} flexDirection="row" gap={0} alignItems="center">
-        {icon(ic, color, 11)}
-        <Button key={key} plain onPress={onPress}><Text size="caption" color={color}>{label}</Text></Button>
-      </Box>
+      <Button key={key} plain onPress={onPress}><Text size="caption" color={color}>{`${ACTION_GLYPH[ic] ?? ''} ${label}`.trim()}</Text></Button>
     )
     // What a message can be changed through: the opening post, an issue/PR comment, a commit comment.
     type Act = { type: 'body'; d: Detail } | { type: 'ic'; id: string; d: Detail } | { type: 'cc'; id: string; d: Detail }
@@ -1183,6 +1270,7 @@ export const register: Register = on => {
       return id ? { type: 'ic', id, d } : undefined
     }
     const actKey = (a: Act) => (a.type === 'body' ? `body:${a.d.kind}:${a.d.id}` : `${a.type}:${a.id}`)
+    const acts = new Map<string, Act>()
     async function changeMessage(a: Act, body: string | null) {
       const k = actKey(a)
       edits.set(k, { ...(edits.get(k) ?? { text: '' }), busy: body === null ? 'Deleting…' : 'Saving…', error: undefined })
@@ -1207,8 +1295,8 @@ export const register: Register = on => {
     const comment = (key: string, who: string, when: string, body: string, note = 'commented', isAuthor = false, act?: Act) => {
       const mine = !!me && who === me
       const ek = act ? actKey(act) : ''
+      if (act) acts.set(ek, act)
       const editing = act ? edits.get(ek) : undefined
-      const { Input } = els as any
       const label = note === 'commented' ? ago(when) : `${note}, ${ago(when)}`
       return (
         <Box key={key} flexDirection="row" gap={1} alignItems="flex-start" justifyContent={mine ? 'flex-end' : 'flex-start'}
@@ -1222,16 +1310,14 @@ export const register: Register = on => {
             </Box>
             {editing && !editing.confirmDelete
               ? (
-                <Box flexDirection="column" gap={1} width={Math.max(16, (((e.props as any).bodyColumns ?? 60) as number) - 8)}>
-                  <Input key={`edit:${ek}`} rows={3} value={editing.text} submitLabel="save" autoFocus
-                    onInput={(t: string) => { edits.set(ek, { ...editing, text: t }) }}
-                    onSubmit={(t: string) => void changeMessage(act!, t)} />
-                  <Box flexDirection="row" columnGap={2} alignItems="center">
-                    <Button key={`editsave:${ek}`} variant="primary" onPress={() => void changeMessage(act!, edits.get(ek)?.text ?? editing.text)}>Save</Button>
-                    <Button key={`editcancel:${ek}`} variant="secondary" onPress={() => { edits.delete(ek); redraw() }}>Cancel</Button>
-                    {editing.busy && <Text size="caption" color={C.subtle} italic>{editing.busy}</Text>}
-                    {editing.error && <Text size="caption" color="error">{editing.error}</Text>}
+                // Edited in the chat box below; the bubble shows which message that is.
+                <Box flexDirection="column" gap={0} alignItems="flex-end">
+                  <Box paddingX={1} paddingY={rich ? 1 : 0} borderStyle="round"
+                    borderColor={rich ? `${accent}99` : 'promptBorder'}
+                    backgroundColor={fill(mine ? C.cardMine : C.card)}>
+                    {md(`md:${key}`, body)}
                   </Box>
+                  <Text size="caption" color={ORANGE}>editing</Text>
                 </Box>
               )
               : (
@@ -1243,7 +1329,10 @@ export const register: Register = on => {
               )}
             {mine && act && !editing && (
               <Box flexDirection="row" columnGap={0}>
-                {action(`edit:${ek}:open`, 'pencil', 'Edit', () => { edits.set(ek, { text: body }); redraw() })}
+                {action(`edit:${ek}:open`, 'pencil', 'Edit', () => {
+                  edits.set(ek, { text: body }); setDraft(`edit|${ek}`, { text: body })
+                  editTarget = { k: slotKey(act.d), ek }; redraw()
+                })}
                 {act.type !== 'body' && (
                   action(`delete:${ek}`, 'trash', 'Delete', () => { edits.set(ek, { text: body, confirmDelete: true }); redraw() })
                 )}
@@ -1253,7 +1342,7 @@ export const register: Register = on => {
               <Box flexDirection="row" columnGap={2} alignItems="center">
                 <Text size="caption" color={C.subtle}>Delete this message?</Text>
                 <Button key={`deleteyes:${ek}`} variant="primary" onPress={() => void changeMessage(act!, null)}>Delete</Button>
-                <Button key={`deleteno:${ek}`} variant="secondary" onPress={() => { edits.delete(ek); redraw() }}>Keep</Button>
+                {action(`deleteno:${ek}`, 'close', 'Keep', () => { edits.delete(ek); redraw() })}
                 {editing.busy && <Text size="caption" color={C.subtle} italic>{editing.busy}</Text>}
                 {editing.error && <Text size="caption" color="error">{editing.error}</Text>}
               </Box>
@@ -1327,9 +1416,43 @@ export const register: Register = on => {
           : state === 'closed' ? action(`reopen:${k}`, 'issueOpen', `Reopen ${noun}`, () => void send(d, 'reopen')) : null,
       ]
     }
+    // A message box grows with its text (wrapped at its width), from 2 rows up to 40% of the
+    // panel's height; past that it scrolls inside.
+    const fitRows = (text: string, cols: number) => {
+      const bodyRows = (((e.props as any).scroll?.bodyRows ?? 40) as number)
+      const width = Math.max(8, cols - 4)
+      const lines = text.split(/\r?\n/).reduce((n, l) => n + Math.max(1, Math.ceil(l.length / width)), 0)
+      return Math.min(Math.max(2, lines), Math.max(3, Math.floor(bodyRows * 0.4)))
+    }
     const composer = (d: Detail) => {
       const { Input } = els as any
       const k = slotKey(d)
+      const act = editTarget?.k === k ? acts.get(editTarget.ek) : undefined
+      if (editTarget && act) {
+        const ek = editTarget.ek
+        const dk = `edit|${ek}`
+        const st = edits.get(ek)
+        const stop = () => { edits.delete(ek); drafts.delete(dk); editTarget = null; redraw() }
+        const save = () => void changeMessage(act, draftOf(dk).text).then(() => { if (!edits.has(ek)) { drafts.delete(dk); editTarget = null; redraw() } })
+        senders.set(dk, save)
+        return (
+          <Box key={`composer:${k}`} flexDirection="column" gap={0}>
+            <Box flexDirection="row" columnGap={1} alignItems="center">
+              <Text size="caption" color={ORANGE}>✎ Editing message</Text>
+              <Text size="caption" color={C.subtle}>·</Text>
+              <Button key={`editcancel:${ek}`} plain onPress={stop}><Text size="caption" color={C.muted}>Cancel</Text></Button>
+              {st?.busy && <Text size="caption" color={C.subtle} italic>{st.busy}</Text>}
+              {st?.error && <Text size="caption" color="error">{st.error}</Text>}
+            </Box>
+            <Box flexDirection="column" width={Math.max(16, (((e.props as any).bodyColumns ?? 60) as number) - 2)}>
+              <Input key={`edit:${ek}`} rows={fitRows(draftOf(dk).text, (((e.props as any).bodyColumns ?? 60) as number) - 2)} value={draftOf(dk).text} submitLabel="➤" autoFocus
+                placeholder="Edit your message"
+                onInput={(t: string) => void typed($, dk, t)}
+                onSubmit={(t: string) => { setDraft(dk, { text: t }); save() }} />
+            </Box>
+          </Box>
+        )
+      }
       if (d.kind !== 'commit') pasteTarget = k
       senders.set(k, () => void send(d))
       const dr = draftOf(k)
@@ -1385,15 +1508,14 @@ export const register: Register = on => {
                   ['link', 'Enter a file path', () => { setDraft(k, { menu: false, pathField: true }); redraw() }],
                 ] as [string, string, () => void][]).map(([ic, label, act]) => (
                   // No border per row: each one added a row above and below (too tall).
-                  <Box key={`menuitem:${k}:${ic}`} flexDirection="row" gap={1} alignItems="center">
-                    {icon(ic, C.icon, 15)}
-                    <Button key={`menu:${k}:${ic}`} plain onPress={act}>{label}</Button>
-                  </Box>
+                  <Button key={`menu:${k}:${ic}`} plain onPress={act}>
+                    <Text color={C.text}>{`${({ upload: '↑', clipboard: '⎘', link: '⌨' } as Record<string, string>)[ic] ?? ''}  ${label}`}</Text>
+                  </Button>
                 ))}
               </Box>
             )}
             <Box flexDirection="column" width={Math.max(16, (((e.props as any).bodyColumns ?? 60) as number) - (canAttach ? 6 : 2))}>
-              <Input key={`compose:${k}`} rows={2} value={dr.text} submitLabel="➤"
+              <Input key={`compose:${k}`} rows={fitRows(dr.text, (((e.props as any).bodyColumns ?? 60) as number) - (canAttach ? 6 : 2))} value={dr.text} submitLabel="➤"
                 placeholder={d.kind === 'commit' ? 'Message on this commit' : `Message #${d.id}`}
                 onInput={(t: string) => void typed($, k, t)}
                 onSubmit={(t: string) => { setDraft(k, { text: t }); void send(d) }} />
@@ -1633,16 +1755,15 @@ export const register: Register = on => {
           {frame([
             v.dir
               ? <Box key="upbox" flexDirection="row" gap={1} alignItems="center">
-                  {icon('folder', C.subtle, 14)}
-                  <Button key="up" plain onPress={() => set({ dir: v.dir.replace(/[^/]+\/$/, '') })}><Text color={C.subtle}>..</Text></Button>
+                  <Button key="up" plain onPress={() => set({ dir: v.dir.replace(/[^/]+\/$/, '') })}><Text color={C.subtle}>▴ ..</Text></Button>
                 </Box>
               : null,
             ...entries.map(it => (
               <Box key={`fbox:${v.dir}${it.name}`} flexDirection="row" gap={1} alignItems="center">
-                {icon(it.isDir ? 'folder' : 'file', it.isDir ? C.folder : C.subtle, 14)}
                 <Button key={`f:${v.dir}${it.name}`} plain
                   onPress={() => it.isDir ? set({ dir: `${v.dir}${it.name}/` }) : set({ file: `${v.dir}${it.name}` })}>
-                  <Text color={C.text}>{it.name}</Text>
+                  <Text color={it.isDir ? C.folder : C.subtle}>{it.isDir ? '▸ ' : '  '}</Text>
+                  <Text color={C.text}>{it.isDir ? `${it.name}/` : it.name}</Text>
                 </Button>
               </Box>
             )),
@@ -1678,7 +1799,7 @@ export const register: Register = on => {
         : box(<Text color="error">{String((err as Error)?.message ?? err)}</Text>)
     }
 
-    if (pasteTarget && e.surface === 'desktop') ensureWatcher($)
+    if (e.surface === 'desktop') ensureWatcher($)
     else stopWatcher()
 
     return (

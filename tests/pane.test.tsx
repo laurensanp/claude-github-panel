@@ -325,3 +325,44 @@ test('"to push" is a Push button', async ($, on) => {
   expect(asked[0]).toContain('Push all current progress')
   await ui.unmount()
 })
+
+// Each act waits for the key watcher's stream to settle, so this one needs longer.
+test('mouse buttons 4 and 5 go back and forward', { timeoutMs: 15000 }, async ($, on) => {
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('ui.focus', () => ({}))
+  on('clock.after', () => ({ value: undefined }))
+  const gates: (() => void)[] = []
+  const step = () => new Promise<void>(r => gates.push(r))
+  on('process.spawn', async function* () {
+    yield { stream: 'stdout', text: 'READY' }
+    for (const b of ['BACK', 'BACK', 'FORWARD', 'FORWARD']) { await step(); yield { stream: 'stdout', text: b } }
+    await step()
+    return { value: { code: 0, signal: null } }
+  } as any)
+  on('process.run', (_, e) => {
+    const cmd = (e as any).argv.join(' ')
+    const hit = OUT.find(([re]) => re.test(cmd))
+    return { value: { exitCode: hit ? 0 : 1, stdout: hit?.[1] ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, isFocused: true }, surface: 'desktop' })
+  const seen = async (q: any) => {
+    for (let i = 0; i < 100; i++) { const hit = await ui.find(q); if (hit) return hit; await new Promise(r => setTimeout(r, 10)) }
+    return undefined
+  }
+  const press = async () => { for (let i = 0; i < 100 && !gates.length; i++) await new Promise(r => setTimeout(r, 10)); gates.shift()!() }
+  expect(await seen({ key: 'f:mod' }), 'Code tab').toBeDefined()
+  await ui.press({ key: 'tab:issues' })
+  await seen({ key: 'open:issue#3' }); await ui.press({ key: 'open:issue#3', link: { href: 'https://open/issue#3' } })
+  expect(await seen({ key: 'compose:issue|3' }), 'issue open').toBeDefined()
+  await press() // button 4
+  expect(await seen({ key: 'open:issue#3' }), 'back in the issue list').toBeDefined()
+  await press() // button 4
+  expect(await seen({ key: 'f:mod' }), 'back on the Code tab').toBeDefined()
+  await press() // button 5
+  expect(await seen({ key: 'open:issue#3' }), 'forward to the list').toBeDefined()
+  await press() // button 5
+  expect(await seen({ key: 'compose:issue|3' }), 'forward to the issue').toBeDefined()
+  gates.shift()?.()
+  await ui.unmount()
+})
