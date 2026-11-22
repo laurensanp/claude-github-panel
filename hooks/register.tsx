@@ -932,6 +932,8 @@ export const register: Register = on => {
     navForward = () => void update($, view, old => { const f = future.pop(); if (!f) return old; past.push(old); return f })
     used = new Set()
     redraw = () => $.ui.invalidate('ui.render')
+    // A pane on screen keeps itself fresh, also after a reload in a session started outside a repo.
+    if (!timer) timer = $.clock.every(TICK_MS, () => void poll($))
     pasteTarget = ''
     const focusedNow = !!(e.props as any).isFocused
     paneFocused = focusedNow

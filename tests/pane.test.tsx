@@ -26,6 +26,8 @@ const OUT: [RegExp, string][] = [
   [/^gh pr list/, JSON.stringify([PR])],
   [/^gh issue list/, JSON.stringify([ISSUE])],
   [/^gh issue view 3/, JSON.stringify(ISSUE_VIEW)],
+  [/^gh pr view 4/, JSON.stringify({ ...PR, state: 'CLOSED', body: 'Interop fixes', createdAt: '2026-11-16T00:00:00Z', reviews: [], files: [], commits: [], baseRefName: 'main', headRefName: 'fix', isCrossRepository: true, headRepositoryOwner: { login: 'x' },
+    comments: [{ author: { login: 'o' }, body: 'Thanks, most of it went in', createdAt: '2026-11-22T15:31:20Z', url: 'https://github.com/o/r/pull/4#issuecomment-888' }] })],
   [/^git log/, ['abc1234', 'abc1234ff', '2026-11-17T00:00:00Z', 'me', 'VIRIS 0.5.0'].join('\t')],
 ]
 
@@ -71,6 +73,10 @@ test('tabs draw, an issue opens inside the panel', async ($, on) => {
     await pressWhenDrawn({ key: 'tab:prs' })
     expect(await seen({ type: 'Text', text: /#4/ }), 'check 6').toBeDefined()
     expect(await seen({ type: 'Text', text: /\+5/ }), 'check 7').toBeDefined()
+    // Your reply on a closed PR shows in its conversation.
+    await pressWhenDrawn({ key: 'open:pr#4', link: { href: 'https://open/pr#4' } })
+    expect(await seen({ text: /most of it went in/ }), 'reply on a PR').toBeDefined()
+    await pressWhenDrawn({ key: 'back' })
     await pressWhenDrawn({ key: 'tab:issues' })
     await pressWhenDrawn({ key: 'open:issue#3', link: { href: 'https://open/issue#3' } })
     expect(await seen({ type: 'Text', text: /Crash on join/ }), 'check 8').toBeDefined()
@@ -371,5 +377,20 @@ test('mouse buttons 4 and 5 go back and forward', { timeoutMs: 15000 }, async ($
   await press() // button 5
   expect(await seen({ key: 'compose:issue|3' }), 'forward to the issue').toBeDefined()
   gates.shift()?.()
+  await ui.unmount()
+})
+
+test('the panel keeps itself fresh in a session that did not start in a repository', async ($, on) => {
+  let timers = 0
+  on('clock.every', () => (timers++, { value: { cancel() {} } }) as any)
+  on('clock.after', () => ({ value: undefined }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('command.register', () => ({ value: {} }) as any)
+  on('session.start', (_, e) => ({ cwd: (e as any).cwd }) as any)
+  await ($ as any).session.start({ cwd: 'C:/x/not-a-repo' })
+  expect(timers, 'no repository, no timer yet').toBe(0)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  for (let i = 0; i < 50 && !timers; i++) await new Promise(r => setTimeout(r, 10))
+  expect(timers, 'the drawn panel starts its refresh').toBe(1)
   await ui.unmount()
 })
